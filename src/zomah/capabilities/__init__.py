@@ -1,3 +1,8 @@
+from .move_file import (
+    MoveFileRequest,
+    MoveFileResponse,
+    move_file,
+)
 from .write_file import (
     UnsupportedWriteContent,
     WriteFileRequest,
@@ -48,6 +53,9 @@ from .project_state import (
 )
 
 __all__ = [
+    "MoveFileRequest",
+    "MoveFileResponse",
+    "move_file",
     "UnsupportedWriteContent",
     "WriteFileRequest",
     "WriteFileResponse",

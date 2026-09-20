@@ -132,6 +132,32 @@ class WriteScope:
 
         return cls(roots=tuple(dict.fromkeys(canonical_roots)))
 
+    def resolve_existing_file(self, requested_path: str | Path) -> Path:
+        requested = Path(requested_path).expanduser()
+        if not requested.is_absolute():
+            raise InvalidWriteTarget("move_file source requires an absolute path")
+
+        if not os.path.lexists(requested):
+            raise InvalidWriteTarget(f"move source does not exist: {requested}")
+        if requested.is_symlink():
+            raise InvalidWriteTarget(f"symlink move sources are not allowed: {requested}")
+
+        try:
+            canonical = requested.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise InvalidWriteTarget(f"move source does not exist: {requested}") from exc
+
+        if not any(canonical.is_relative_to(root) for root in self.roots):
+            raise PathOutsideScope(
+                f"path is outside configured write roots: {canonical}"
+            )
+        if not canonical.is_file():
+            raise InvalidWriteTarget(
+                f"move source is not a regular file: {canonical}"
+            )
+
+        return canonical
+
     def resolve_target(self, requested_path: str | Path) -> Path:
         requested = Path(requested_path).expanduser()
         if not requested.is_absolute():

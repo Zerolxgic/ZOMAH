@@ -22,6 +22,7 @@ Z1 has begun with the `ProjectState` persistence slice:
 - structured `inspect_system` capability for explicit Linux system domains
 - lexical `search_knowledge` capability backed by SQLite FTS5
 - scoped UTF-8 `write_file` capability with separate write roots
+- scoped no-overwrite `move_file` capability for regular files
 
 No agent loop, generic tool registry, model client, or framework has been added yet.
 
@@ -49,11 +50,13 @@ src/zomah/capabilities/list_directory.py bounded directory listing capability
 src/zomah/capabilities/inspect_system.py structured Linux system inspection
 src/zomah/capabilities/search_knowledge.py lexical knowledge retrieval
 src/zomah/capabilities/write_file.py scoped text mutation capability
+src/zomah/capabilities/move_file.py scoped file organization capability
 tests/test_read_file.py         file-read boundary tests
 tests/test_list_directory.py    directory-list boundary tests
 tests/test_inspect_system.py      system-inspection contract tests
 tests/test_search_knowledge.py     retrieval boundary tests
 tests/test_write_file.py           file-write boundary tests
+tests/test_move_file.py            file-move boundary tests
 ```
 
 ## First local run
@@ -72,4 +75,4 @@ This initializes the canonical SQLite database at `$XDG_DATA_HOME/zomah/zomah.db
 
 ## Write boundary
 
-`write_file` uses a separate `WriteScope`; read authority never implies write authority. v0 supports explicit `create`, `replace`, and `append` modes only. It does not create parent directories, follow symlink write targets, delete files, or accept more than 64 KiB of UTF-8 text in one request.
+`write_file` and `move_file` use a separate `WriteScope`; read authority never implies write authority. `write_file` supports explicit `create`, `replace`, and `append` modes only. `move_file` moves regular files only, never overwrites a destination, never creates directories, and never falls back to cross-filesystem copy/delete behavior.

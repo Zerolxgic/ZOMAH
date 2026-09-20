@@ -85,4 +85,4 @@ This initializes the canonical SQLite database at `$XDG_DATA_HOME/zomah/zomah.db
 
 ## Execute boundary
 
-`run_script` can execute only scripts pre-registered by the harness owner. The model selects a script ID and values allowed by that script's explicit argument contract; it never supplies an executable path, shell command, working directory, timeout, or inherited environment. Execution always uses `shell=False`, bounded returned output, and a fixed timeout.
+`run_script` can execute only scripts pre-registered by the harness owner. The model selects a script ID and values allowed by that script's explicit argument contract; it never supplies an executable path, shell command, working directory, timeout, or inherited environment. Execution always uses `shell=False`, bounded returned output, and a fixed timeout. Registered executables must live outside every model `WriteScope`, and registration records the script's SHA-256 digest. ZOMAH revalidates the executable path, execute bit, and exact digest before every run; modified scripts require explicit re-registration.

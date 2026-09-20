@@ -4,13 +4,18 @@ import json
 import tempfile
 from pathlib import Path
 
+from zomah.access import WriteScope
 from zomah.capabilities.run_script import RunScriptRequest, run_script
 from zomah.execution import RegisteredScript, ScriptArgumentSpec, ScriptRegistry
 
 
 with tempfile.TemporaryDirectory(prefix="zomah-script-demo-") as temp_dir:
     root = Path(temp_dir)
-    script = root / "system-summary.sh"
+    script_root = root / "approved-scripts"
+    write_root = root / "workspace"
+    script_root.mkdir()
+    write_root.mkdir()
+    script = script_root / "system-summary.sh"
     script.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
@@ -29,7 +34,8 @@ with tempfile.TemporaryDirectory(prefix="zomah-script-demo-") as temp_dir:
     script.chmod(0o700)
 
     registry = ScriptRegistry(
-        (
+        write_scope=WriteScope.from_paths((write_root,)),
+        scripts=(
             RegisteredScript(
                 name="system-summary",
                 path=script,

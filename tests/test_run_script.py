@@ -6,11 +6,13 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from zomah.access import WriteScope
 from zomah.capabilities.run_script import RunScriptRequest, run_script
 from zomah.execution import (
     InvalidScriptArguments,
     RegisteredScript,
     ScriptArgumentSpec,
+    ScriptIntegrityError,
     ScriptRegistry,
     ScriptRegistryError,
     UnknownScript,
@@ -22,6 +24,15 @@ def _make_script(tmp_path: Path, body: str, *, name: str = "script.sh") -> Path:
     path.write_text("#!/usr/bin/env bash\nset -euo pipefail\n" + body)
     path.chmod(0o700)
     return path
+
+
+def _registry(tmp_path: Path, *scripts: RegisteredScript) -> ScriptRegistry:
+    write_root = tmp_path / "writable"
+    write_root.mkdir(exist_ok=True)
+    return ScriptRegistry(
+        write_scope=WriteScope.from_paths((write_root,)),
+        scripts=tuple(scripts),
+    )
 
 
 def test_run_registered_script_with_validated_arguments(tmp_path: Path) -> None:
@@ -37,30 +48,25 @@ def test_run_registered_script_with_validated_arguments(tmp_path: Path) -> None:
         'if [[ "$loud" -eq 1 ]]; then name="${name^^}"; fi\n'
         'printf "hello %s\\n" "$name"\n',
     )
-    registry = ScriptRegistry(
-        (
-            RegisteredScript(
-                name="greet",
-                path=script,
-                arguments=(
-                    ScriptArgumentSpec(
-                        name="name",
-                        flag="--name",
-                        kind="string",
-                        pattern=r"[A-Za-z]{1,20}",
-                    ),
-                    ScriptArgumentSpec(
-                        name="loud", flag="--loud", kind="boolean"
-                    ),
+    registry = _registry(
+        tmp_path,
+        RegisteredScript(
+            name="greet",
+            path=script,
+            arguments=(
+                ScriptArgumentSpec(
+                    name="name",
+                    flag="--name",
+                    kind="string",
+                    pattern=r"[A-Za-z]{1,20}",
                 ),
+                ScriptArgumentSpec(name="loud", flag="--loud", kind="boolean"),
             ),
-        )
+        ),
     )
 
     response = run_script(
-        RunScriptRequest(
-            script="greet", arguments={"name": "Elyria", "loud": True}
-        ),
+        RunScriptRequest(script="greet", arguments={"name": "Elyria", "loud": True}),
         registry,
     )
 
@@ -72,14 +78,14 @@ def test_run_registered_script_with_validated_arguments(tmp_path: Path) -> None:
 
 
 def test_unknown_script_is_rejected(tmp_path: Path) -> None:
-    registry = ScriptRegistry()
+    registry = _registry(tmp_path)
     with pytest.raises(UnknownScript, match="not registered"):
         run_script(RunScriptRequest(script="missing"), registry)
 
 
 def test_unknown_argument_is_rejected(tmp_path: Path) -> None:
     script = _make_script(tmp_path, 'printf "ok\\n"\n')
-    registry = ScriptRegistry((RegisteredScript(name="safe", path=script),))
+    registry = _registry(tmp_path, RegisteredScript(name="safe", path=script))
 
     with pytest.raises(InvalidScriptArguments, match="unknown"):
         run_script(
@@ -90,22 +96,21 @@ def test_unknown_argument_is_rejected(tmp_path: Path) -> None:
 
 def test_missing_required_argument_is_rejected(tmp_path: Path) -> None:
     script = _make_script(tmp_path, 'printf "%s\\n" "$1"\n')
-    registry = ScriptRegistry(
-        (
-            RegisteredScript(
-                name="required",
-                path=script,
-                arguments=(
-                    ScriptArgumentSpec(
-                        name="mode",
-                        flag=None,
-                        kind="string",
-                        required=True,
-                        choices=("status", "summary"),
-                    ),
+    registry = _registry(
+        tmp_path,
+        RegisteredScript(
+            name="required",
+            path=script,
+            arguments=(
+                ScriptArgumentSpec(
+                    name="mode",
+                    flag=None,
+                    kind="string",
+                    required=True,
+                    choices=("status", "summary"),
                 ),
             ),
-        )
+        ),
     )
 
     with pytest.raises(InvalidScriptArguments, match="missing required"):
@@ -133,7 +138,7 @@ def test_string_and_integer_argument_constraints_are_enforced(tmp_path: Path) ->
             ),
         ),
     )
-    registry = ScriptRegistry((registered,))
+    registry = _registry(tmp_path, registered)
 
     with pytest.raises(InvalidScriptArguments, match="must be one of"):
         run_script(
@@ -170,8 +175,9 @@ def test_registration_rejects_symlink_and_non_executable(tmp_path: Path) -> None
 
 def test_timeout_is_enforced(tmp_path: Path) -> None:
     script = _make_script(tmp_path, 'sleep 2\nprintf "too late\\n"\n')
-    registry = ScriptRegistry(
-        (RegisteredScript(name="slow", path=script, timeout_seconds=0.05),)
+    registry = _registry(
+        tmp_path,
+        RegisteredScript(name="slow", path=script, timeout_seconds=0.05),
     )
 
     response = run_script(RunScriptRequest(script="slow"), registry)
@@ -184,7 +190,7 @@ def test_timeout_is_enforced(tmp_path: Path) -> None:
 
 def test_nonzero_exit_is_reported_with_stderr(tmp_path: Path) -> None:
     script = _make_script(tmp_path, 'printf "problem\\n" >&2\nexit 7\n')
-    registry = ScriptRegistry((RegisteredScript(name="fails", path=script),))
+    registry = _registry(tmp_path, RegisteredScript(name="fails", path=script))
 
     response = run_script(RunScriptRequest(script="fails"), registry)
 
@@ -198,7 +204,7 @@ def test_output_is_bounded_and_marked_truncated(tmp_path: Path) -> None:
         tmp_path,
         "python - <<'PY'\nprint('x' * 70000, end='')\nPY\n",
     )
-    registry = ScriptRegistry((RegisteredScript(name="chatty", path=script),))
+    registry = _registry(tmp_path, RegisteredScript(name="chatty", path=script))
 
     response = run_script(RunScriptRequest(script="chatty"), registry)
 
@@ -212,7 +218,7 @@ def test_environment_does_not_inherit_arbitrary_parent_variables(
 ) -> None:
     script = _make_script(tmp_path, 'printf "%s" "${ZOMAH_TEST_SECRET-}"\n')
     monkeypatch.setenv("ZOMAH_TEST_SECRET", "do-not-leak")
-    registry = ScriptRegistry((RegisteredScript(name="env", path=script),))
+    registry = _registry(tmp_path, RegisteredScript(name="env", path=script))
 
     response = run_script(RunScriptRequest(script="env"), registry)
 
@@ -226,14 +232,9 @@ def test_registered_working_directory_is_fixed(tmp_path: Path) -> None:
     script_dir.mkdir()
     work_dir.mkdir()
     script = _make_script(script_dir, 'pwd\n')
-    registry = ScriptRegistry(
-        (
-            RegisteredScript(
-                name="pwd",
-                path=script,
-                working_directory=work_dir,
-            ),
-        )
+    registry = _registry(
+        tmp_path,
+        RegisteredScript(name="pwd", path=script, working_directory=work_dir),
     )
 
     response = run_script(RunScriptRequest(script="pwd"), registry)
@@ -241,9 +242,62 @@ def test_registered_working_directory_is_fixed(tmp_path: Path) -> None:
     assert response.stdout.strip() == str(work_dir)
 
 
-def test_sudo_binary_cannot_be_registered() -> None:
+def test_sudo_binary_cannot_be_registered(tmp_path: Path) -> None:
     sudo = Path("/usr/bin/sudo")
     if not sudo.exists():
         pytest.skip("sudo is not installed")
     with pytest.raises(ScriptRegistryError, match="sudo"):
         RegisteredScript(name="sudo", path=sudo)
+
+
+def test_registry_rejects_script_inside_write_scope(tmp_path: Path) -> None:
+    write_root = tmp_path / "writable"
+    write_root.mkdir()
+    script = _make_script(write_root, 'printf "unsafe\\n"\n')
+    registered = RegisteredScript(name="unsafe", path=script)
+
+    with pytest.raises(ScriptRegistryError, match="write roots"):
+        ScriptRegistry(
+            write_scope=WriteScope.from_paths((write_root,)),
+            scripts=(registered,),
+        )
+
+
+def test_registered_script_records_exact_sha256(tmp_path: Path) -> None:
+    script = _make_script(tmp_path, 'printf "stable\\n"\n')
+    registered = RegisteredScript(name="stable", path=script)
+
+    import hashlib
+
+    expected = hashlib.sha256(script.read_bytes()).hexdigest()
+    assert registered.approved_sha256 == expected
+
+
+def test_changed_script_is_rejected_before_execution(tmp_path: Path) -> None:
+    script = _make_script(tmp_path, 'printf "approved\\n"\n')
+    registry = _registry(tmp_path, RegisteredScript(name="stable", path=script))
+    script.write_text("#!/usr/bin/env bash\nprintf 'changed\\n'\n")
+    script.chmod(0o700)
+
+    with pytest.raises(ScriptIntegrityError, match="content changed"):
+        run_script(RunScriptRequest(script="stable"), registry)
+
+
+def test_registered_script_that_loses_execute_bit_is_rejected(tmp_path: Path) -> None:
+    script = _make_script(tmp_path, 'printf "approved\\n"\n')
+    registry = _registry(tmp_path, RegisteredScript(name="stable", path=script))
+    script.chmod(0o600)
+
+    with pytest.raises(ScriptIntegrityError, match="no longer executable"):
+        run_script(RunScriptRequest(script="stable"), registry)
+
+
+def test_registered_script_replaced_with_symlink_is_rejected(tmp_path: Path) -> None:
+    script = _make_script(tmp_path, 'printf "approved\\n"\n')
+    registry = _registry(tmp_path, RegisteredScript(name="stable", path=script))
+    replacement = _make_script(tmp_path, 'printf "replacement\\n"\n', name="other.sh")
+    script.unlink()
+    script.symlink_to(replacement)
+
+    with pytest.raises(ScriptIntegrityError, match="became a symlink"):
+        run_script(RunScriptRequest(script="stable"), registry)

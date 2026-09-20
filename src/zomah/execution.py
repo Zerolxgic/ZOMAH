@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Mapping
+
+from zomah.access import WriteScope
 
 
 SCRIPT_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -26,6 +29,10 @@ class UnknownScript(ScriptRegistryError):
 
 class InvalidScriptArguments(ScriptRegistryError):
     """Raised when model-provided arguments violate a registered contract."""
+
+
+class ScriptIntegrityError(ScriptRegistryError):
+    """Raised when a registered executable no longer matches its approval."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,6 +169,7 @@ class RegisteredScript:
     arguments: tuple[ScriptArgumentSpec, ...] = ()
     timeout_seconds: float = 15.0
     working_directory: Path | None = None
+    approved_sha256: str = field(init=False)
 
     def __post_init__(self) -> None:
         if not SCRIPT_NAME_RE.fullmatch(self.name):
@@ -225,6 +233,43 @@ class RegisteredScript:
 
         object.__setattr__(self, "path", canonical_path)
         object.__setattr__(self, "working_directory", canonical_cwd)
+        object.__setattr__(self, "approved_sha256", _sha256_file(canonical_path))
+
+    def verify_integrity(self) -> None:
+        """Verify that the executable still matches the bytes that were approved."""
+
+        if not os.path.lexists(self.path):
+            raise ScriptIntegrityError(
+                f"registered script no longer exists: {self.path}"
+            )
+        if self.path.is_symlink():
+            raise ScriptIntegrityError(
+                f"registered script became a symlink: {self.path}"
+            )
+        try:
+            canonical_path = self.path.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise ScriptIntegrityError(
+                f"registered script no longer exists: {self.path}"
+            ) from exc
+        if canonical_path != self.path:
+            raise ScriptIntegrityError(
+                f"registered script path changed resolution: {self.path}"
+            )
+        if not canonical_path.is_file():
+            raise ScriptIntegrityError(
+                f"registered script is no longer a regular file: {canonical_path}"
+            )
+        if not os.access(canonical_path, os.X_OK):
+            raise ScriptIntegrityError(
+                f"registered script is no longer executable: {canonical_path}"
+            )
+
+        current_sha256 = _sha256_file(canonical_path)
+        if current_sha256 != self.approved_sha256:
+            raise ScriptIntegrityError(
+                f"registered script content changed after approval: {canonical_path}"
+            )
 
     def build_argv(self, provided: Mapping[str, ArgumentValue]) -> list[str]:
         specs = {argument.name: argument for argument in self.arguments}
@@ -256,9 +301,17 @@ class ScriptRegistry:
 
     This is not a generic tool registry. It only maps model-visible script IDs
     to trusted, prevalidated executable contracts created by the harness owner.
+    Registered executables must live outside every model-writable root, and
+    their exact bytes are revalidated before each execution.
     """
 
-    def __init__(self, scripts: tuple[RegisteredScript, ...] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        write_scope: WriteScope,
+        scripts: tuple[RegisteredScript, ...] = (),
+    ) -> None:
+        self._write_scope = write_scope
         self._scripts: dict[str, RegisteredScript] = {}
         for script in scripts:
             self.register(script)
@@ -266,13 +319,28 @@ class ScriptRegistry:
     def register(self, script: RegisteredScript) -> None:
         if script.name in self._scripts:
             raise ScriptRegistryError(f"script is already registered: {script.name}")
+        if any(script.path.is_relative_to(root) for root in self._write_scope.roots):
+            raise ScriptRegistryError(
+                "registered script may not be inside configured write roots: "
+                f"{script.path}"
+            )
         self._scripts[script.name] = script
 
     def resolve(self, name: str) -> RegisteredScript:
         try:
-            return self._scripts[name]
+            script = self._scripts[name]
         except KeyError as exc:
             raise UnknownScript(f"script is not registered: {name}") from exc
+        script.verify_integrity()
+        return script
 
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self._scripts))
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()

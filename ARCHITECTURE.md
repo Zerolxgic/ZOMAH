@@ -170,7 +170,7 @@ The worker does not rewrite the entire state record. Actor identity is injected 
 
 #### `run_script(script, arguments?)`
 
-Execute a registered or explicitly approved script.
+Execute a registered or explicitly approved script. Approval binds to the exact registered executable bytes, not only to a pathname. Registered executables must live outside every configured model `WriteScope`; ZOMAH stores a SHA-256 digest when the script is approved and verifies path resolution, executability, and the digest before every run. Any change requires explicit re-registration.
 
 Arbitrary shell execution is outside v0.
 

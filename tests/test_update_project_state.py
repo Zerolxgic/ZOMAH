@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,8 @@ from zomah.capabilities import (
     update_project_state,
 )
 from zomah.state import (
+    DecisionProposal,
+    DecisionStatus,
     ProjectNotFound,
     ProjectState,
     ProjectStatePatch,
@@ -46,13 +49,13 @@ def test_update_project_state_returns_canonical_result_and_revision_metadata(tmp
             project_id="zomah",
             patch=ProjectStatePatch(
                 expected_revision=0,
-                updated_by="elyria",
                 current_focus="Validate the read/write state loop.",
                 last_action="Implemented update_project_state.",
                 next_action="Choose the next minimal read capability.",
             ),
         ),
         repository=repo,
+        actor="elyria",
     )
 
     assert response.previous_revision == 0
@@ -71,10 +74,7 @@ def test_update_request_rejects_noop_patch():
     with pytest.raises(ValidationError, match="contains no changes"):
         UpdateProjectStateRequest(
             project_id="zomah",
-            patch=ProjectStatePatch(
-                expected_revision=0,
-                updated_by="elyria",
-            ),
+            patch=ProjectStatePatch(expected_revision=0),
         )
 
 
@@ -87,11 +87,11 @@ def test_update_project_state_preserves_explicit_null(tmp_path: Path):
             project_id="zomah",
             patch=ProjectStatePatch(
                 expected_revision=0,
-                updated_by="zerrius",
                 next_action=None,
             ),
         ),
         repository=repo,
+        actor="zerrius",
     )
 
     assert response.project.next_action is None
@@ -106,9 +106,9 @@ def test_update_project_state_keeps_revision_conflict_explicit(tmp_path: Path):
         "zomah",
         ProjectStatePatch(
             expected_revision=0,
-            updated_by="zerrius",
             last_action="Another worker updated state first.",
         ),
+        actor="zerrius",
     )
 
     with pytest.raises(RevisionConflict):
@@ -117,11 +117,11 @@ def test_update_project_state_keeps_revision_conflict_explicit(tmp_path: Path):
                 project_id="zomah",
                 patch=ProjectStatePatch(
                     expected_revision=0,
-                    updated_by="elyria",
                     last_action="Stale update.",
                 ),
             ),
             repository=repo,
+            actor="elyria",
         )
 
 
@@ -134,9 +134,83 @@ def test_update_project_state_keeps_missing_project_explicit(tmp_path: Path):
                 project_id="missing",
                 patch=ProjectStatePatch(
                     expected_revision=0,
-                    updated_by="elyria",
                     current_focus="This project does not exist.",
                 ),
             ),
             repository=repo,
+            actor="elyria",
         )
+
+
+def test_model_patch_cannot_supply_actor_identity():
+    with pytest.raises(ValidationError, match="updated_by"):
+        ProjectStatePatch.model_validate(
+            {
+                "expected_revision": 0,
+                "updated_by": "zerrius",
+                "current_focus": "Pretend this came from the user.",
+            }
+        )
+
+
+def test_model_decision_input_cannot_supply_status_or_timestamp():
+    with pytest.raises(ValidationError):
+        DecisionProposal.model_validate(
+            {
+                "id": "ADR-003",
+                "statement": "A proposed decision.",
+                "rationale": "The model may propose but not authorize.",
+                "status": "accepted",
+                "created_at": "2000-01-01T00:00:00Z",
+            }
+        )
+
+
+def test_model_added_decision_is_stored_as_harness_timestamped_proposal(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    seed_project(repo)
+    before = datetime.now(timezone.utc)
+
+    response = update_project_state(
+        UpdateProjectStateRequest(
+            project_id="zomah",
+            patch=ProjectStatePatch(
+                expected_revision=0,
+                add_decisions=[
+                    DecisionProposal(
+                        id="ADR-003",
+                        statement="Keep authority outside model input.",
+                        rationale="Proposal and authorization are different lifecycle states.",
+                    )
+                ],
+            ),
+        ),
+        repository=repo,
+        actor="elyria",
+    )
+
+    decision = response.project.decisions[0]
+    assert decision.id == "ADR-003"
+    assert decision.status == DecisionStatus.PROPOSED
+    assert decision.created_at >= before
+    assert response.project.updated_by == "elyria"
+
+
+def test_update_project_state_rejects_blank_injected_actor(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    seed_project(repo)
+
+    with pytest.raises(ValueError, match="actor must not be blank"):
+        update_project_state(
+            UpdateProjectStateRequest(
+                project_id="zomah",
+                patch=ProjectStatePatch(
+                    expected_revision=0,
+                    current_focus="Should not commit.",
+                ),
+            ),
+            repository=repo,
+            actor="   ",
+        )
+
+    assert repo.get("zomah").revision == 0

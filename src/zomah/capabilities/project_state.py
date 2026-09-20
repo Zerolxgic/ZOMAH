@@ -73,18 +73,20 @@ def get_project_state(
 def update_project_state(
     request: UpdateProjectStateRequest,
     repository: ProjectStateRepository,
+    *,
+    actor: str,
 ) -> UpdateProjectStateResponse:
     """Apply one validated ProjectState patch and return the canonical result.
 
-    Transactionality and optimistic concurrency stay in the repository. The
-    capability layer only validates that the request actually changes state,
-    delegates the mutation, and shapes a stable result for a future tool
-    adapter.
+    Transactionality and optimistic concurrency stay in the repository. Actor
+    identity is supplied by the harness call site rather than model input. The
+    capability validates that the request actually changes state, delegates the
+    mutation, and shapes a stable result for a future tool adapter.
     """
 
     previous_revision = request.patch.expected_revision
     changed_fields = _changed_fields(request.patch)
-    project = repository.apply_patch(request.project_id, request.patch)
+    project = repository.apply_patch(request.project_id, request.patch, actor=actor)
 
     return UpdateProjectStateResponse(
         project=project,
@@ -111,7 +113,6 @@ def _changed_fields(patch: ProjectStatePatch) -> list[str]:
         "add_blockers",
         "resolve_blockers",
         "add_decisions",
-        "transition_decisions",
         "add_important_paths",
     ):
         if getattr(patch, field):

@@ -1,5 +1,6 @@
 from .models import (
     Decision,
+    DecisionProposal,
     DecisionStatus,
     DecisionTransition,
     ImportantPath,
@@ -18,6 +19,7 @@ from .repository import (
 
 __all__ = [
     "Decision",
+    "DecisionProposal",
     "DecisionStatus",
     "DecisionTransition",
     "ImportantPath",

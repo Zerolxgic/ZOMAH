@@ -6,7 +6,15 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .models import Decision, DecisionTransition, ImportantPath, ProjectState, ProjectStatePatch
+from .models import (
+    Decision,
+    DecisionProposal,
+    DecisionStatus,
+    DecisionTransition,
+    ImportantPath,
+    ProjectState,
+    ProjectStatePatch,
+)
 
 
 class StateError(RuntimeError):
@@ -154,7 +162,14 @@ class ProjectStateRepository:
             updated_by=project["updated_by"],
         )
 
-    def apply_patch(self, project_id: str, patch: ProjectStatePatch) -> ProjectState:
+    def apply_patch(
+        self,
+        project_id: str,
+        patch: ProjectStatePatch,
+        *,
+        actor: str,
+    ) -> ProjectState:
+        actor = _actor(actor)
         now = datetime.now(timezone.utc)
         now_iso = _iso(now)
 
@@ -172,7 +187,7 @@ class ProjectStateRepository:
 
             updates: dict[str, object] = {
                 "updated_at": now_iso,
-                "updated_by": patch.updated_by,
+                "updated_by": actor,
                 "revision": patch.expected_revision + 1,
             }
             for field in ("name", "status", "phase", "summary", "current_focus"):
@@ -204,9 +219,76 @@ class ProjectStateRepository:
             _resolve_items(
                 conn, "project_blockers", project_id, patch.resolve_blockers, now_iso
             )
-            _insert_decisions(conn, project_id, patch.add_decisions)
-            _transition_decisions(conn, project_id, patch.transition_decisions)
+            _insert_decision_proposals(conn, project_id, patch.add_decisions, now_iso)
             _insert_paths(conn, project_id, patch.add_important_paths)
+
+        return self.get(project_id)
+
+    def transition_decision(
+        self,
+        project_id: str,
+        transition: DecisionTransition,
+        *,
+        expected_revision: int,
+        actor: str,
+    ) -> ProjectState:
+        """Apply an authorized decision lifecycle transition.
+
+        This method is intentionally separate from the model-facing project
+        state patch. A future harness/admin adapter may call it only after the
+        relevant authorization decision has been made outside the model input.
+        """
+
+        actor = _actor(actor)
+        now_iso = _iso(datetime.now(timezone.utc))
+
+        with self.connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            current = conn.execute(
+                "SELECT revision FROM projects WHERE id = ?", (project_id,)
+            ).fetchone()
+            if current is None:
+                raise ProjectNotFound(project_id)
+            if current["revision"] != expected_revision:
+                raise RevisionConflict(
+                    f"expected revision {expected_revision}, current revision {current['revision']}"
+                )
+
+            decision = conn.execute(
+                """
+                SELECT status FROM project_decisions
+                WHERE decision_id = ? AND project_id = ?
+                """,
+                (transition.decision_id, project_id),
+            ).fetchone()
+            if decision is None:
+                raise StateError(f"decision not found: {transition.decision_id}")
+
+            _validate_decision_transition(
+                DecisionStatus(decision["status"]), transition.status
+            )
+
+            conn.execute(
+                """
+                UPDATE project_decisions
+                SET status = ?, superseded_by = ?
+                WHERE decision_id = ? AND project_id = ?
+                """,
+                (
+                    transition.status.value,
+                    transition.superseded_by,
+                    transition.decision_id,
+                    project_id,
+                ),
+            )
+            conn.execute(
+                """
+                UPDATE projects
+                SET revision = ?, updated_at = ?, updated_by = ?
+                WHERE id = ?
+                """,
+                (expected_revision + 1, now_iso, actor, project_id),
+            )
 
         return self.get(project_id)
 
@@ -295,7 +377,11 @@ def _resolve_items(
         )
 
 
-def _insert_decisions(conn: sqlite3.Connection, project_id: str, items: list[Decision]) -> None:
+def _insert_decisions(
+    conn: sqlite3.Connection, project_id: str, items: list[Decision]
+) -> None:
+    """Insert complete decisions from trusted bootstrap/admin state."""
+
     for item in items:
         conn.execute(
             """
@@ -315,20 +401,49 @@ def _insert_decisions(conn: sqlite3.Connection, project_id: str, items: list[Dec
         )
 
 
-def _transition_decisions(
-    conn: sqlite3.Connection, project_id: str, items: list[DecisionTransition]
+def _insert_decision_proposals(
+    conn: sqlite3.Connection,
+    project_id: str,
+    items: list[DecisionProposal],
+    created_at: str,
 ) -> None:
     for item in items:
-        cursor = conn.execute(
+        conn.execute(
             """
-            UPDATE project_decisions
-            SET status = ?, superseded_by = ?
-            WHERE decision_id = ? AND project_id = ?
+            INSERT INTO project_decisions(
+                decision_id, project_id, statement, rationale, status, created_at, superseded_by
+            ) VALUES (?, ?, ?, ?, ?, ?, NULL)
             """,
-            (item.status.value, item.superseded_by, item.decision_id, project_id),
+            (
+                item.id,
+                project_id,
+                item.statement,
+                item.rationale,
+                DecisionStatus.PROPOSED.value,
+                created_at,
+            ),
         )
-        if cursor.rowcount != 1:
-            raise StateError(f"decision not found: {item.decision_id}")
+
+
+def _validate_decision_transition(
+    current: DecisionStatus, target: DecisionStatus
+) -> None:
+    allowed = {
+        DecisionStatus.PROPOSED: {
+            DecisionStatus.ACCEPTED,
+            DecisionStatus.INVALIDATED,
+            DecisionStatus.CANCELLED,
+        },
+        DecisionStatus.ACCEPTED: {
+            DecisionStatus.SUPERSEDED,
+            DecisionStatus.INVALIDATED,
+            DecisionStatus.CANCELLED,
+        },
+    }
+    if target not in allowed.get(current, set()):
+        raise StateError(
+            f"invalid decision transition: {current.value} -> {target.value}"
+        )
 
 
 def _insert_paths(conn: sqlite3.Connection, project_id: str, items: list[ImportantPath]) -> None:
@@ -340,6 +455,13 @@ def _insert_paths(conn: sqlite3.Connection, project_id: str, items: list[Importa
             """,
             (project_id, item.role, item.path, item.description),
         )
+
+
+def _actor(value: str) -> str:
+    actor = value.strip()
+    if not actor:
+        raise ValueError("actor must not be blank")
+    return actor
 
 
 def _iso(value: datetime) -> str:

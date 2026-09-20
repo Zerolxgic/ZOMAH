@@ -16,7 +16,7 @@ Z1 has begun with the `ProjectState` persistence slice:
 - one-way Markdown export
 - pytest coverage
 - model-facing `get_project_state` capability
-- model-facing `update_project_state` capability
+- model-facing `update_project_state` capability with harness-owned actor provenance
 - scoped, bounded `read_file` capability
 - scoped, bounded `list_directory` capability
 - structured `inspect_system` capability for explicit Linux system domains
@@ -26,6 +26,8 @@ Z1 has begun with the `ProjectState` persistence slice:
 - registry-only `run_script` execution with validated arguments and bounded results
 
 No agent loop, generic tool registry, model client, or framework has been added yet.
+
+Project-state mutation keeps authorization outside model input: workers may propose decisions, but ZOMAH stamps actor/time provenance and stores model-originated decisions as `proposed`. Decision acceptance and lifecycle transitions use a separate internal/admin repository path.
 
 ## Development setup
 

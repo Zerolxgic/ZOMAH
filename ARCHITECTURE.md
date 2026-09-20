@@ -164,7 +164,7 @@ Deletion is not part of v0.
 
 Apply a validated partial update to project state.
 
-The worker does not rewrite the entire state record.
+The worker does not rewrite the entire state record. Actor identity is injected by the harness and is not part of model input. Decision additions are proposals only; the model-facing patch cannot assign decision status, timestamps, or lifecycle transitions.
 
 ### EXECUTE
 
@@ -226,6 +226,8 @@ cancelled
 ```
 
 Superseded decisions remain available and may reference the decision that replaced them.
+
+Model-originated decisions enter canonical state as `proposed`. ZOMAH owns their creation timestamps. Acceptance, supersession, invalidation, and cancellation are separate authorized transitions and are intentionally not exposed through `update_project_state`.
 
 ### Important paths
 

@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -31,6 +31,13 @@ NonEmptyStr = Annotated[str, Field(min_length=1)]
 
 
 class Decision(BaseModel):
+    """Canonical stored decision record.
+
+    This model is returned to workers, but it is not the model-facing input for
+    creating a decision. Trusted bootstrap/admin code may still construct a
+    complete Decision directly.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     id: NonEmptyStr
@@ -41,12 +48,36 @@ class Decision(BaseModel):
     superseded_by: str | None = None
 
 
+class DecisionProposal(BaseModel):
+    """Model-facing decision proposal.
+
+    Status and timestamps are intentionally absent. ZOMAH stores proposals as
+    `proposed` and stamps their creation time itself.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: NonEmptyStr
+    statement: NonEmptyStr
+    rationale: NonEmptyStr
+
+
 class DecisionTransition(BaseModel):
+    """Internal/admin transition for an existing decision."""
+
     model_config = ConfigDict(extra="forbid")
 
     decision_id: NonEmptyStr
     status: DecisionStatus
     superseded_by: str | None = None
+
+    @model_validator(mode="after")
+    def validate_supersession(self) -> "DecisionTransition":
+        if self.status == DecisionStatus.SUPERSEDED and not self.superseded_by:
+            raise ValueError("superseded decisions require superseded_by")
+        if self.status != DecisionStatus.SUPERSEDED and self.superseded_by is not None:
+            raise ValueError("superseded_by is only valid for superseded decisions")
+        return self
 
 
 class ImportantPath(BaseModel):
@@ -78,17 +109,16 @@ class ProjectState(BaseModel):
 
 
 class ProjectStatePatch(BaseModel):
-    """A partial, validated state mutation.
+    """A partial, validated model-facing state mutation.
 
-    Required scalar fields may be omitted but not blanked. `last_action` and
-    `next_action` may be explicitly set to null. Collection fields use
-    add/resolve operations so workers never replace whole historical lists.
+    Actor identity and timestamps are deliberately absent. The harness injects
+    actor provenance when applying the patch. Decision additions are proposals
+    only; authorization transitions are not model-facing.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     expected_revision: int = Field(ge=0)
-    updated_by: NonEmptyStr
 
     name: NonEmptyStr | None = None
     status: ProjectStatus | None = None
@@ -102,6 +132,5 @@ class ProjectStatePatch(BaseModel):
     resolve_open_questions: list[NonEmptyStr] = Field(default_factory=list)
     add_blockers: list[NonEmptyStr] = Field(default_factory=list)
     resolve_blockers: list[NonEmptyStr] = Field(default_factory=list)
-    add_decisions: list[Decision] = Field(default_factory=list)
-    transition_decisions: list[DecisionTransition] = Field(default_factory=list)
+    add_decisions: list[DecisionProposal] = Field(default_factory=list)
     add_important_paths: list[ImportantPath] = Field(default_factory=list)

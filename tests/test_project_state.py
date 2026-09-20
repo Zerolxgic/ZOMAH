@@ -4,11 +4,14 @@ import pytest
 
 from zomah.state import (
     Decision,
+    DecisionStatus,
+    DecisionTransition,
     ImportantPath,
     ProjectState,
     ProjectStatePatch,
     ProjectStateRepository,
     RevisionConflict,
+    StateError,
 )
 
 
@@ -34,9 +37,7 @@ def initial_state() -> ProjectState:
                 rationale="Avoid duplicating worker capabilities.",
             )
         ],
-        important_paths=[
-            ImportantPath(role="repo", path="~/Projects/ZOMAH")
-        ],
+        important_paths=[ImportantPath(role="repo", path="~/Projects/ZOMAH")],
         updated_by="zerrius",
     )
 
@@ -59,12 +60,12 @@ def test_patch_is_transactional_and_increments_revision(tmp_path: Path):
         "zomah",
         ProjectStatePatch(
             expected_revision=0,
-            updated_by="elyria",
             last_action="Implemented the first persistence slice.",
             current_focus="Verify state transitions.",
             add_blockers=["Need local integration test."],
             resolve_open_questions=["How should Markdown export be triggered?"],
         ),
+        actor="elyria",
     )
 
     assert updated.revision == 1
@@ -81,9 +82,9 @@ def test_stale_revision_is_rejected(tmp_path: Path):
         "zomah",
         ProjectStatePatch(
             expected_revision=0,
-            updated_by="elyria",
             last_action="First mutation.",
         ),
+        actor="elyria",
     )
 
     with pytest.raises(RevisionConflict):
@@ -91,9 +92,9 @@ def test_stale_revision_is_rejected(tmp_path: Path):
             "zomah",
             ProjectStatePatch(
                 expected_revision=0,
-                updated_by="codex",
                 last_action="Stale mutation.",
             ),
+            actor="codex",
         )
 
     assert repo.get("zomah").last_action == "First mutation."
@@ -111,29 +112,43 @@ def test_markdown_export_is_one_way_view(tmp_path: Path):
     assert "ADR-001" in text
 
 
-def test_decision_transition_preserves_record(tmp_path: Path):
-    from zomah.state import DecisionStatus, DecisionTransition
-
+def test_authorized_decision_transition_preserves_record(tmp_path: Path):
     repo = make_repo(tmp_path)
     repo.create(initial_state())
 
-    updated = repo.apply_patch(
+    updated = repo.transition_decision(
         "zomah",
-        ProjectStatePatch(
-            expected_revision=0,
-            updated_by="zerrius",
-            transition_decisions=[
-                DecisionTransition(
-                    decision_id="ADR-001",
-                    status=DecisionStatus.SUPERSEDED,
-                    superseded_by="ADR-002",
-                )
-            ],
+        DecisionTransition(
+            decision_id="ADR-001",
+            status=DecisionStatus.SUPERSEDED,
+            superseded_by="ADR-002",
         ),
+        expected_revision=0,
+        actor="zerrius",
     )
 
+    assert updated.revision == 1
+    assert updated.updated_by == "zerrius"
     assert updated.decisions[0].status == DecisionStatus.SUPERSEDED
     assert updated.decisions[0].superseded_by == "ADR-002"
+
+
+def test_invalid_decision_transition_is_rejected_without_revision_change(tmp_path: Path):
+    repo = make_repo(tmp_path)
+    repo.create(initial_state())
+
+    with pytest.raises(StateError, match="invalid decision transition"):
+        repo.transition_decision(
+            "zomah",
+            DecisionTransition(
+                decision_id="ADR-001",
+                status=DecisionStatus.ACCEPTED,
+            ),
+            expected_revision=0,
+            actor="zerrius",
+        )
+
+    assert repo.get("zomah").revision == 0
 
 
 def test_nullable_action_can_be_explicitly_cleared(tmp_path: Path):
@@ -146,9 +161,9 @@ def test_nullable_action_can_be_explicitly_cleared(tmp_path: Path):
         "zomah",
         ProjectStatePatch(
             expected_revision=0,
-            updated_by="zerrius",
             last_action=None,
         ),
+        actor="zerrius",
     )
 
     assert updated.last_action is None

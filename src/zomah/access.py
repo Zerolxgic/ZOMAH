@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -19,6 +20,10 @@ class InvalidReadTarget(PathScopeError):
 
 class InvalidDirectoryTarget(PathScopeError):
     """Raised when a requested directory target is not an existing directory."""
+
+
+class InvalidWriteTarget(PathScopeError):
+    """Raised when a requested write target violates the configured write boundary."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,3 +103,60 @@ class ReadScope:
             raise PathOutsideScope(f"path is outside configured read roots: {canonical}")
 
         return canonical
+
+
+@dataclass(frozen=True, slots=True)
+class WriteScope:
+    """A minimal allowlist of canonical filesystem roots for write operations.
+
+    Write authority is intentionally separate from read authority. Parent
+    directories must already exist, and their canonical location is checked
+    before a target path is returned. Existing symlink targets are rejected so
+    a write cannot acquire authority indirectly through a link.
+    """
+
+    roots: tuple[Path, ...]
+
+    @classmethod
+    def from_paths(cls, roots: Iterable[str | Path]) -> "WriteScope":
+        canonical_roots: list[Path] = []
+
+        for root in roots:
+            canonical = Path(root).expanduser().resolve(strict=True)
+            if not canonical.is_dir():
+                raise ValueError(f"write root is not a directory: {canonical}")
+            canonical_roots.append(canonical)
+
+        if not canonical_roots:
+            raise ValueError("at least one write root is required")
+
+        return cls(roots=tuple(dict.fromkeys(canonical_roots)))
+
+    def resolve_target(self, requested_path: str | Path) -> Path:
+        requested = Path(requested_path).expanduser()
+        if not requested.is_absolute():
+            raise InvalidWriteTarget("write_file requires an absolute path")
+
+        if not requested.name or requested.name in {".", ".."}:
+            raise InvalidWriteTarget(f"invalid write target: {requested}")
+
+        try:
+            parent = requested.parent.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise InvalidWriteTarget(
+                f"parent directory does not exist: {requested.parent}"
+            ) from exc
+
+        if not parent.is_dir():
+            raise InvalidWriteTarget(f"parent is not a directory: {parent}")
+
+        if not any(parent.is_relative_to(root) for root in self.roots):
+            raise PathOutsideScope(
+                f"path is outside configured write roots: {parent / requested.name}"
+            )
+
+        target = parent / requested.name
+        if os.path.lexists(target) and target.is_symlink():
+            raise InvalidWriteTarget(f"symlink write targets are not allowed: {target}")
+
+        return target

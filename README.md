@@ -59,3 +59,8 @@ python examples/bootstrap_state.py
 ```
 
 This initializes the canonical SQLite database at `$XDG_DATA_HOME/zomah/zomah.db` or `~/.local/share/zomah/zomah.db`, creates the initial ZOMAH `ProjectState` if it does not already exist, and writes a generated Markdown mirror beside the database under `exports/`.
+
+## Knowledge retrieval
+
+- `search_knowledge` uses a derived SQLite FTS5 index over approved UTF-8 text roots.
+- The index is rebuildable and separate from canonical ProjectState storage.

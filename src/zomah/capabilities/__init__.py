@@ -1,3 +1,9 @@
+from .search_knowledge import (
+    KnowledgeResult,
+    SearchKnowledgeRequest,
+    SearchKnowledgeResponse,
+    search_knowledge,
+)
 from .inspect_system import (
     GpuInfo,
     GpuSnapshot,
@@ -36,6 +42,10 @@ from .project_state import (
 )
 
 __all__ = [
+    "KnowledgeResult",
+    "SearchKnowledgeRequest",
+    "SearchKnowledgeResponse",
+    "search_knowledge",
     "GpuInfo",
     "GpuSnapshot",
     "InspectSystemRequest",

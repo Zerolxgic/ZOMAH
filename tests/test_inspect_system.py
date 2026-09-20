@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -66,6 +67,31 @@ def test_process_inspection_filters_and_bounds_results(tmp_path: Path) -> None:
     assert response.result.truncated is True
     assert response.result.items[0].pid == 10
     assert response.result.items[0].rss_bytes == 10 * 1024
+
+
+def test_process_inspection_excludes_inspector_process(tmp_path: Path) -> None:
+    proc = tmp_path / "proc"
+    proc.mkdir()
+
+    self_pid = os.getpid()
+    self_process = proc / str(self_pid)
+    self_process.mkdir()
+    self_process.joinpath("status").write_text(
+        f"Name:\tpython\nPid:\t{self_pid}\nState:\tR (running)\nUid:\t0\t0\t0\t0\nVmRSS:\t1 kB\n",
+        encoding="utf-8",
+    )
+    self_process.joinpath("cmdline").write_bytes(
+        b"python\x00examples/inspect_system.py\x00processes\x00--query\x00lm\x00"
+    )
+
+    response = inspect_system(
+        InspectSystemRequest(domain="processes", query="lm"),
+        proc_root=proc,
+    )
+
+    assert isinstance(response.result, ProcessSnapshot)
+    assert response.result.total_matches == 0
+    assert response.result.items == []
 
 
 def test_service_inspection_uses_fixed_systemctl_command_and_filters() -> None:

@@ -210,11 +210,15 @@ def inspect_system(
 def _inspect_processes(request: InspectSystemRequest, proc_root: Path) -> ProcessSnapshot:
     query = request.query.casefold() if request.query else None
     matches: list[ProcessInfo] = []
+    inspector_pid = os.getpid()
 
     for process_dir in sorted(
         (path for path in proc_root.iterdir() if path.name.isdigit()),
         key=lambda path: int(path.name),
     ):
+        if int(process_dir.name) == inspector_pid:
+            continue
+
         info = _read_process(process_dir)
         if info is None:
             continue

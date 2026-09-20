@@ -1,3 +1,19 @@
+from .inspect_system import (
+    GpuInfo,
+    GpuSnapshot,
+    InspectSystemRequest,
+    InspectSystemResponse,
+    MemoryInfo,
+    MountInfo,
+    MountSnapshot,
+    ProcessInfo,
+    ProcessSnapshot,
+    ServiceInfo,
+    ServiceSnapshot,
+    StorageInfo,
+    StorageSnapshot,
+    inspect_system,
+)
 from .list_directory import (
     DirectoryEntry,
     ListDirectoryRequest,
@@ -20,6 +36,20 @@ from .project_state import (
 )
 
 __all__ = [
+    "GpuInfo",
+    "GpuSnapshot",
+    "InspectSystemRequest",
+    "InspectSystemResponse",
+    "MemoryInfo",
+    "MountInfo",
+    "MountSnapshot",
+    "ProcessInfo",
+    "ProcessSnapshot",
+    "ServiceInfo",
+    "ServiceSnapshot",
+    "StorageInfo",
+    "StorageSnapshot",
+    "inspect_system",
     "DirectoryEntry",
     "ListDirectoryRequest",
     "ListDirectoryResponse",

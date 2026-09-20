@@ -19,6 +19,7 @@ Z1 has begun with the `ProjectState` persistence slice:
 - model-facing `update_project_state` capability
 - scoped, bounded `read_file` capability
 - scoped, bounded `list_directory` capability
+- structured `inspect_system` capability for explicit Linux system domains
 
 No agent loop, generic tool registry, model client, or framework has been added yet.
 
@@ -43,8 +44,10 @@ tests/test_update_project_state.py change capability tests
 src/zomah/access.py             read path scope enforcement
 src/zomah/capabilities/read_file.py bounded text read capability
 src/zomah/capabilities/list_directory.py bounded directory listing capability
+src/zomah/capabilities/inspect_system.py structured Linux system inspection
 tests/test_read_file.py         file-read boundary tests
 tests/test_list_directory.py    directory-list boundary tests
+tests/test_inspect_system.py      system-inspection contract tests
 ```
 
 ## First local run

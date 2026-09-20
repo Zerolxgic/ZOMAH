@@ -1,3 +1,8 @@
+from .run_script import (
+    RunScriptRequest,
+    RunScriptResponse,
+    run_script,
+)
 from .move_file import (
     MoveFileRequest,
     MoveFileResponse,
@@ -53,6 +58,9 @@ from .project_state import (
 )
 
 __all__ = [
+    "RunScriptRequest",
+    "RunScriptResponse",
+    "run_script",
     "MoveFileRequest",
     "MoveFileResponse",
     "move_file",

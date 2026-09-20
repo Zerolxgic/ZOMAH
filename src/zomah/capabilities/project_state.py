@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from zomah.state import ProjectState, ProjectStateRepository
+from zomah.state import ProjectState, ProjectStatePatch, ProjectStateRepository
 
 
 ProjectId = Annotated[
@@ -29,6 +29,32 @@ class GetProjectStateResponse(BaseModel):
     project: ProjectState
 
 
+class UpdateProjectStateRequest(BaseModel):
+    """Validated input for the update_project_state capability."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: ProjectId
+    patch: ProjectStatePatch
+
+    @model_validator(mode="after")
+    def require_state_change(self) -> "UpdateProjectStateRequest":
+        if not _changed_fields(self.patch):
+            raise ValueError("project state patch contains no changes")
+        return self
+
+
+class UpdateProjectStateResponse(BaseModel):
+    """Structured output returned after a successful state mutation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project: ProjectState
+    previous_revision: int = Field(ge=0)
+    new_revision: int = Field(ge=1)
+    changed_fields: list[str]
+
+
 def get_project_state(
     request: GetProjectStateRequest,
     repository: ProjectStateRepository,
@@ -42,3 +68,53 @@ def get_project_state(
     """
 
     return GetProjectStateResponse(project=repository.get(request.project_id))
+
+
+def update_project_state(
+    request: UpdateProjectStateRequest,
+    repository: ProjectStateRepository,
+) -> UpdateProjectStateResponse:
+    """Apply one validated ProjectState patch and return the canonical result.
+
+    Transactionality and optimistic concurrency stay in the repository. The
+    capability layer only validates that the request actually changes state,
+    delegates the mutation, and shapes a stable result for a future tool
+    adapter.
+    """
+
+    previous_revision = request.patch.expected_revision
+    changed_fields = _changed_fields(request.patch)
+    project = repository.apply_patch(request.project_id, request.patch)
+
+    return UpdateProjectStateResponse(
+        project=project,
+        previous_revision=previous_revision,
+        new_revision=project.revision,
+        changed_fields=changed_fields,
+    )
+
+
+def _changed_fields(patch: ProjectStatePatch) -> list[str]:
+    fields: list[str] = []
+
+    for field in ("name", "status", "phase", "summary", "current_focus"):
+        if getattr(patch, field) is not None:
+            fields.append(field)
+
+    for field in ("last_action", "next_action"):
+        if field in patch.model_fields_set:
+            fields.append(field)
+
+    for field in (
+        "add_open_questions",
+        "resolve_open_questions",
+        "add_blockers",
+        "resolve_blockers",
+        "add_decisions",
+        "transition_decisions",
+        "add_important_paths",
+    ):
+        if getattr(patch, field):
+            fields.append(field)
+
+    return fields

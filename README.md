@@ -15,8 +15,10 @@ Z1 has begun with the `ProjectState` persistence slice:
 - optimistic revision checks
 - one-way Markdown export
 - pytest coverage
+- model-facing `get_project_state` capability
+- model-facing `update_project_state` capability
 
-No agent loop, tool router, model client, or framework has been added yet.
+No agent loop, generic tool registry, model client, or framework has been added yet.
 
 ## Development setup
 
@@ -33,7 +35,9 @@ pytest
 src/zomah/state/models.py      ProjectState contracts
 src/zomah/state/schema.sql     SQLite schema
 src/zomah/state/repository.py  persistence + patch behavior
-tests/test_project_state.py    Z1 contract tests
+tests/test_project_state.py    Z1 persistence contract tests
+tests/test_get_project_state.py read capability tests
+tests/test_update_project_state.py change capability tests
 ```
 
 ## First local run

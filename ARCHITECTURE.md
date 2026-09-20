@@ -237,27 +237,22 @@ Each entry should identify a role and a path, with an optional description.
 
 ## 6. Trace model
 
-Every meaningful operation should be reconstructable.
-
-A minimal trace should eventually answer:
+Every model-boundary capability invocation is traced automatically before execution. The v0 local SQLite trace is intentionally small:
 
 ```text
 run_id
-task
 worker
-model
-operation
-inputs
-permission_result
-result
-state_change
-error
+capability
 started_at
 finished_at
-verification
+outcome
+error_code
+target
 ```
 
-The exact schema is deferred until the tracing slice.
+Tracing stores no prompts, raw request payloads, capability results, file contents, stdout/stderr, or exception details. Targets are compact references only. Knowledge-search query text and script arguments are deliberately excluded.
+
+A capability does not execute if its trace row cannot be started. If final trace completion fails after a capability has already executed, the existing `started` row remains as visible evidence of an incomplete trace rather than turning a completed mutation into a model-facing failure that could invite a retry.
 
 ## 7. Security boundary
 

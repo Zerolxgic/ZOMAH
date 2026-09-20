@@ -25,6 +25,7 @@ Z1 has begun with the `ProjectState` persistence slice:
 - scoped no-overwrite `move_file` capability for regular files
 - registry-only `run_script` execution with validated arguments and bounded results
 - local-model-sized output budgets across file reads, listings, system inspection, script output, and ProjectState decision history
+- mandatory local SQLite tracing at the model-facing capability boundary
 
 No agent loop, generic tool registry, model client, or framework has been added yet.
 
@@ -64,6 +65,9 @@ tests/test_search_knowledge.py     retrieval boundary tests
 tests/test_write_file.py           file-write boundary tests
 tests/test_move_file.py            file-move boundary tests
 tests/test_run_script.py             execution-boundary tests
+src/zomah/model_boundary.py          model request/error/trace adapter
+src/zomah/tracing.py                 minimal local capability trace store
+tests/test_tracing.py                automatic tracing boundary tests
 ```
 
 ## First local run
@@ -91,3 +95,7 @@ This initializes the canonical SQLite database at `$XDG_DATA_HOME/zomah/zomah.db
 ### Model-facing error boundary
 
 Capability implementations keep native Python exceptions for development. Before results reach a model, `zomah.model_boundary.invoke_model_capability` validates the request and returns a stable `ok/result/error` envelope. Unexpected exception details are redacted from model context.
+
+## Tracing
+
+Model-driven capability calls are traced automatically in `$XDG_DATA_HOME/zomah/trace.db` or `~/.local/share/zomah/trace.db`. Traces contain compact metadata only: worker, capability, timestamps, outcome, error code, and a non-content target/reference. Raw model payloads, prompts, capability results, stdout/stderr, and exception details are intentionally not stored. If tracing cannot start, ZOMAH blocks capability execution.

@@ -23,6 +23,7 @@ from zomah.execution import (
 )
 from zomah.knowledge import KnowledgeIndexError, KnowledgeIndexUnavailable
 from zomah.state import ProjectNotFound, RevisionConflict, StateError
+from zomah.tracing import TraceError, TraceOutcome, TraceStore
 
 
 RequestModel = TypeVar("RequestModel", bound=BaseModel)
@@ -65,38 +66,76 @@ def invoke_model_capability(
     capability: Callable[..., ResponseModel],
     payload: Mapping[str, Any],
     /,
+    *,
+    worker: str,
+    trace_store: TraceStore,
     **dependencies: Any,
 ) -> CapabilityEnvelope:
-    """Validate one model request and normalize the capability result.
+    """Validate, trace, invoke, and normalize one model-facing capability call.
 
-    Capability implementations keep their native Python exceptions for local
-    development and direct tests. Only this model-facing boundary converts
-    failures into a compact stable envelope.
+    Tracing is mandatory at this boundary. A capability never executes if a
+    trace cannot be started first. The trace stores compact metadata only;
+    model payloads, prompts, results, stdout/stderr, and exception details are
+    intentionally excluded.
 
     `dependencies` are harness-owned objects such as repositories, scopes,
     registries, actor identity, or inspection roots. They are never sourced
     from the model payload by this adapter.
     """
 
+    capability_name = getattr(capability, "__name__", capability.__class__.__name__)
+
     try:
         request = request_type.model_validate(dict(payload))
     except ValidationError as exc:
-        return _failure(_validation_error(exc))
+        error = _validation_error(exc)
+        return _trace_rejected_request(
+            trace_store,
+            worker=worker,
+            capability=capability_name,
+            error=error,
+        )
+
+    try:
+        run_id = trace_store.start_run(
+            worker=worker,
+            capability=capability_name,
+            target=_trace_target(request),
+        )
+    except TraceError as exc:
+        return _failure(normalize_capability_error(exc))
 
     try:
         response = capability(request, **dependencies)
     except Exception as exc:  # noqa: BLE001 - boundary intentionally contains failures.
-        return _failure(normalize_capability_error(exc))
+        error = normalize_capability_error(exc)
+        _safe_finish_trace(
+            trace_store,
+            run_id,
+            outcome=TraceOutcome.FAILED,
+            error_code=error.code,
+        )
+        return _failure(error)
 
     if not isinstance(response, BaseModel):
-        return _failure(
-            CapabilityError(
-                code="internal_error",
-                message="Capability returned an unsupported response type.",
-                retryable=False,
-            )
+        error = CapabilityError(
+            code="internal_error",
+            message="Capability returned an unsupported response type.",
+            retryable=False,
         )
+        _safe_finish_trace(
+            trace_store,
+            run_id,
+            outcome=TraceOutcome.FAILED,
+            error_code=error.code,
+        )
+        return _failure(error)
 
+    _safe_finish_trace(
+        trace_store,
+        run_id,
+        outcome=TraceOutcome.SUCCEEDED,
+    )
     return CapabilityEnvelope(
         ok=True,
         result=response.model_dump(mode="json"),
@@ -155,6 +194,13 @@ def normalize_capability_error(exc: Exception) -> CapabilityError:
         )
     if isinstance(exc, ScriptRegistryError):
         return _error("script_registry_error", str(exc), retryable=False)
+
+    if isinstance(exc, TraceError):
+        return _error(
+            "trace_unavailable",
+            "Mandatory local tracing is unavailable; capability execution was blocked.",
+            retryable=True,
+        )
 
     if isinstance(exc, KnowledgeIndexUnavailable):
         return _error("knowledge_index_unavailable", str(exc), retryable=False)
@@ -230,3 +276,89 @@ def _error(
 
 def _failure(error: CapabilityError) -> CapabilityEnvelope:
     return CapabilityEnvelope(ok=False, result=None, error=error)
+
+def _trace_rejected_request(
+    trace_store: TraceStore,
+    *,
+    worker: str,
+    capability: str,
+    error: CapabilityError,
+) -> CapabilityEnvelope:
+    """Trace a rejected request without retaining its raw model payload."""
+
+    try:
+        run_id = trace_store.start_run(
+            worker=worker,
+            capability=capability,
+            target=None,
+        )
+    except TraceError as exc:
+        return _failure(normalize_capability_error(exc))
+
+    _safe_finish_trace(
+        trace_store,
+        run_id,
+        outcome=TraceOutcome.FAILED,
+        error_code=error.code,
+    )
+    return _failure(error)
+
+
+def _safe_finish_trace(
+    trace_store: TraceStore,
+    run_id: str,
+    *,
+    outcome: TraceOutcome,
+    error_code: str | None = None,
+) -> None:
+    """Best-effort finalization after a mandatory trace row already exists.
+
+    If finalization fails, the durable `started` row remains visible as an
+    incomplete trace. We intentionally do not turn an already-completed
+    state-changing capability into a reported failure that could invite an
+    unsafe retry.
+    """
+
+    try:
+        trace_store.finish_run(
+            run_id,
+            outcome=outcome,
+            error_code=error_code,
+        )
+    except TraceError:
+        return
+
+
+def _trace_target(request: BaseModel) -> str | None:
+    """Return a compact non-content target/reference for local tracing."""
+
+    data = request.model_dump()
+
+    project_id = data.get("project_id")
+    if isinstance(project_id, str):
+        return f"project:{project_id}"
+
+    script = data.get("script")
+    if isinstance(script, str):
+        return f"script:{script}"
+
+    source = data.get("source")
+    destination = data.get("destination")
+    if isinstance(source, str) and isinstance(destination, str):
+        return f"{source} -> {destination}"
+
+    path = data.get("path")
+    if isinstance(path, str):
+        return path
+
+    domain = data.get("domain")
+    if domain is not None:
+        domain_value = getattr(domain, "value", domain)
+        if isinstance(domain_value, str):
+            return f"system:{domain_value}"
+
+    if "query" in data:
+        # Search terms can contain sensitive text. Record only the operation.
+        return "knowledge-search"
+
+    return None

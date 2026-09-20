@@ -14,6 +14,7 @@ from zomah.model_boundary import (
     normalize_capability_error,
 )
 from zomah.state import ProjectNotFound, ProjectStateRepository, RevisionConflict
+from zomah.tracing import TraceStore
 
 
 class EchoRequest(BaseModel):
@@ -30,18 +31,27 @@ def echo(request: EchoRequest) -> EchoResponse:
     return EchoResponse(text=request.text)
 
 
-def test_success_result_is_normalized() -> None:
-    envelope = invoke_model_capability(EchoRequest, echo, {"text": "hello"})
+@pytest.fixture
+def trace_store(tmp_path: Path) -> TraceStore:
+    return TraceStore(tmp_path / "trace.db")
+
+
+def test_success_result_is_normalized(trace_store: TraceStore) -> None:
+    envelope = invoke_model_capability(
+        EchoRequest, echo, {"text": "hello"}, worker="elyria", trace_store=trace_store
+    )
 
     assert envelope == CapabilityEnvelope(ok=True, result={"text": "hello"})
 
 
-def test_request_validation_is_structured_without_echoing_input() -> None:
+def test_request_validation_is_structured_without_echoing_input(trace_store: TraceStore) -> None:
     secret = "do-not-echo-this"
     envelope = invoke_model_capability(
         EchoRequest,
         echo,
         {"text": "hello", "unexpected": secret},
+        worker="elyria",
+        trace_store=trace_store,
     )
 
     assert envelope.ok is False
@@ -53,7 +63,7 @@ def test_request_validation_is_structured_without_echoing_input() -> None:
     assert "unexpected" in serialized
 
 
-def test_project_not_found_is_normalized(tmp_path: Path) -> None:
+def test_project_not_found_is_normalized(tmp_path: Path, trace_store: TraceStore) -> None:
     repository = ProjectStateRepository(tmp_path / "zomah.db")
     repository.initialize()
 
@@ -61,6 +71,8 @@ def test_project_not_found_is_normalized(tmp_path: Path) -> None:
         GetProjectStateRequest,
         get_project_state,
         {"project_id": "missing"},
+        worker="elyria",
+        trace_store=trace_store,
         repository=repository,
     )
 
@@ -106,13 +118,15 @@ def test_script_integrity_error_requires_reregistration() -> None:
     }
 
 
-def test_unexpected_exception_is_redacted() -> None:
+def test_unexpected_exception_is_redacted(trace_store: TraceStore) -> None:
     secret = "internal-secret-detail"
 
     def explode(_: EchoRequest) -> EchoResponse:
         raise RuntimeError(secret)
 
-    envelope = invoke_model_capability(EchoRequest, explode, {"text": "hello"})
+    envelope = invoke_model_capability(
+        EchoRequest, explode, {"text": "hello"}, worker="elyria", trace_store=trace_store
+    )
 
     assert envelope.ok is False
     assert envelope.error is not None
@@ -121,11 +135,13 @@ def test_unexpected_exception_is_redacted() -> None:
     assert secret not in envelope.model_dump_json()
 
 
-def test_non_model_response_becomes_internal_error() -> None:
+def test_non_model_response_becomes_internal_error(trace_store: TraceStore) -> None:
     def broken(_: EchoRequest):
         return {"text": "not a pydantic response"}
 
-    envelope = invoke_model_capability(EchoRequest, broken, {"text": "hello"})
+    envelope = invoke_model_capability(
+        EchoRequest, broken, {"text": "hello"}, worker="elyria", trace_store=trace_store
+    )
 
     assert envelope.ok is False
     assert envelope.error is not None

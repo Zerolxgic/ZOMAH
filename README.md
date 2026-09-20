@@ -17,6 +17,7 @@ Z1 has begun with the `ProjectState` persistence slice:
 - pytest coverage
 - model-facing `get_project_state` capability
 - model-facing `update_project_state` capability
+- scoped, bounded `read_file` capability
 
 No agent loop, generic tool registry, model client, or framework has been added yet.
 
@@ -38,6 +39,9 @@ src/zomah/state/repository.py  persistence + patch behavior
 tests/test_project_state.py    Z1 persistence contract tests
 tests/test_get_project_state.py read capability tests
 tests/test_update_project_state.py change capability tests
+src/zomah/access.py             read path scope enforcement
+src/zomah/capabilities/read_file.py bounded text read capability
+tests/test_read_file.py         filesystem boundary tests
 ```
 
 ## First local run

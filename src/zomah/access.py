@@ -17,6 +17,10 @@ class InvalidReadTarget(PathScopeError):
     """Raised when a requested read target is not an existing regular file."""
 
 
+class InvalidDirectoryTarget(PathScopeError):
+    """Raised when a requested directory target is not an existing directory."""
+
+
 @dataclass(frozen=True, slots=True)
 class ReadScope:
     """A minimal allowlist of canonical filesystem roots for read operations.
@@ -44,19 +48,53 @@ class ReadScope:
         return cls(roots=tuple(dict.fromkeys(canonical_roots)))
 
     def resolve_file(self, requested_path: str | Path) -> Path:
+        canonical = self._resolve_existing(
+            requested_path,
+            absolute_error="read_file requires an absolute path",
+            missing_label="file",
+            invalid_error=InvalidReadTarget,
+        )
+
+        if not canonical.is_file():
+            raise InvalidReadTarget(f"read target is not a regular file: {canonical}")
+
+        return canonical
+
+    def resolve_directory(self, requested_path: str | Path) -> Path:
+        canonical = self._resolve_existing(
+            requested_path,
+            absolute_error="list_directory requires an absolute path",
+            missing_label="directory",
+            invalid_error=InvalidDirectoryTarget,
+        )
+
+        if not canonical.is_dir():
+            raise InvalidDirectoryTarget(
+                f"directory target is not a directory: {canonical}"
+            )
+
+        return canonical
+
+    def _resolve_existing(
+        self,
+        requested_path: str | Path,
+        *,
+        absolute_error: str,
+        missing_label: str,
+        invalid_error: type[PathScopeError],
+    ) -> Path:
         requested = Path(requested_path).expanduser()
         if not requested.is_absolute():
-            raise InvalidReadTarget("read_file requires an absolute path")
+            raise invalid_error(absolute_error)
 
         try:
             canonical = requested.resolve(strict=True)
         except FileNotFoundError as exc:
-            raise InvalidReadTarget(f"file does not exist: {requested}") from exc
+            raise invalid_error(
+                f"{missing_label} does not exist: {requested}"
+            ) from exc
 
         if not any(canonical.is_relative_to(root) for root in self.roots):
             raise PathOutsideScope(f"path is outside configured read roots: {canonical}")
-
-        if not canonical.is_file():
-            raise InvalidReadTarget(f"read target is not a regular file: {canonical}")
 
         return canonical

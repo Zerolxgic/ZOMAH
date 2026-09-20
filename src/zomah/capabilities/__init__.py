@@ -1,3 +1,9 @@
+from .list_directory import (
+    DirectoryEntry,
+    ListDirectoryRequest,
+    ListDirectoryResponse,
+    list_directory,
+)
 from .read_file import (
     ReadFileRequest,
     ReadFileResponse,
@@ -14,6 +20,10 @@ from .project_state import (
 )
 
 __all__ = [
+    "DirectoryEntry",
+    "ListDirectoryRequest",
+    "ListDirectoryResponse",
+    "list_directory",
     "ReadFileRequest",
     "ReadFileResponse",
     "UnsupportedTextFile",

@@ -26,8 +26,11 @@ Query = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
 ]
 
-DEFAULT_MAX_ENTRIES = 100
-MAX_ENTRIES = 500
+DEFAULT_MAX_ENTRIES = 50
+MAX_ENTRIES = 100
+MAX_PROCESS_COMMAND_CHARS = 1024
+MAX_SERVICE_DESCRIPTION_CHARS = 512
+MAX_SERVICE_MESSAGE_CHARS = 1024
 
 
 class ProcessInfo(BaseModel):
@@ -276,7 +279,10 @@ def _read_process(process_dir: Path) -> ProcessInfo | None:
     try:
         raw = (process_dir / "cmdline").read_bytes()
         if raw:
-            command = raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip()
+            command = _truncate_text(
+                raw.replace(b"\x00", b" ").decode("utf-8", errors="replace").strip(),
+                MAX_PROCESS_COMMAND_CHARS,
+            )
     except (FileNotFoundError, PermissionError, ProcessLookupError, OSError):
         pass
 
@@ -313,7 +319,9 @@ def _inspect_services(
             total_matches=0,
             returned=0,
             truncated=False,
-            message=f"service inspection unavailable: {exc}",
+            message=_truncate_text(
+                f"service inspection unavailable: {exc}", MAX_SERVICE_MESSAGE_CHARS
+            ),
         )
 
     if completed.returncode != 0:
@@ -324,7 +332,7 @@ def _inspect_services(
             total_matches=0,
             returned=0,
             truncated=False,
-            message=message,
+            message=_truncate_text(message, MAX_SERVICE_MESSAGE_CHARS),
         )
 
     query = request.query.casefold() if request.query else None
@@ -343,7 +351,7 @@ def _inspect_services(
             load=parts[1],
             active=parts[2],
             sub=parts[3],
-            description=parts[4],
+            description=_truncate_text(parts[4], MAX_SERVICE_DESCRIPTION_CHARS),
         )
         searchable = f"{item.name} {item.active} {item.sub} {item.description}".casefold()
         if query and query not in searchable:
@@ -486,6 +494,12 @@ def _inspect_mounts(request: InspectSystemRequest, proc_root: Path) -> MountSnap
         returned=len(visible),
         truncated=len(matches) > len(visible),
     )
+
+
+def _truncate_text(value: str, max_chars: int) -> str:
+    if len(value) <= max_chars:
+        return value
+    return value[: max_chars - 1] + "…"
 
 
 def _run_command(argv: list[str]) -> subprocess.CompletedProcess[str]:

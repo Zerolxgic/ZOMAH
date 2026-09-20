@@ -209,7 +209,7 @@ def test_output_is_bounded_and_marked_truncated(tmp_path: Path) -> None:
     response = run_script(RunScriptRequest(script="chatty"), registry)
 
     assert response.exit_code == 0
-    assert len(response.stdout.encode("utf-8")) == 64 * 1024
+    assert len(response.stdout.encode("utf-8")) == 16 * 1024
     assert response.stdout_truncated is True
 
 
@@ -301,3 +301,17 @@ def test_registered_script_replaced_with_symlink_is_rejected(tmp_path: Path) -> 
 
     with pytest.raises(ScriptIntegrityError, match="became a symlink"):
         run_script(RunScriptRequest(script="stable"), registry)
+
+
+def test_stderr_has_smaller_model_facing_budget(tmp_path: Path) -> None:
+    script = _make_script(
+        tmp_path,
+        "python - <<'PY'\nimport sys\nsys.stderr.write('x' * 20000)\nPY\n",
+    )
+    registry = _registry(tmp_path, RegisteredScript(name="noisy-error", path=script))
+
+    response = run_script(RunScriptRequest(script="noisy-error"), registry)
+
+    assert response.exit_code == 0
+    assert len(response.stderr.encode("utf-8")) == 8 * 1024
+    assert response.stderr_truncated is True

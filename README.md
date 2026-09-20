@@ -24,6 +24,7 @@ Z1 has begun with the `ProjectState` persistence slice:
 - scoped UTF-8 `write_file` capability with separate write roots
 - scoped no-overwrite `move_file` capability for regular files
 - registry-only `run_script` execution with validated arguments and bounded results
+- local-model-sized output budgets across file reads, listings, system inspection, script output, and ProjectState decision history
 
 No agent loop, generic tool registry, model client, or framework has been added yet.
 

@@ -67,7 +67,9 @@ def test_update_project_state_returns_canonical_result_and_revision_metadata(tmp
         "last_action",
         "next_action",
     ]
-    assert repo.get("zomah") == response.project
+    assert repo.get("zomah").model_dump() == response.project.model_dump(
+        exclude={"decision_window"}
+    )
 
 
 def test_update_request_rejects_noop_patch():

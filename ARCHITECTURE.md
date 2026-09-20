@@ -312,3 +312,9 @@ The architecture is viable when Elyria can:
 7. leave enough trace information to reconstruct meaningful actions.
 
 Anything beyond this remains outside the initial architecture until usage demonstrates a need.
+
+## 10. Model-facing output budgets
+
+ZOMAH budgets capability results for the local model rather than for host memory capacity. Large files, listings, system snapshots, script output, and decision history are intentionally bounded. Workers use pagination, filtering, or follow-up reads when more information is required.
+
+Canonical data is not truncated: these limits apply only to the model-facing projection of a capability result. Project decision history remains complete in SQLite while `get_project_state` and `update_project_state` return a bounded decision window plus lifecycle counts.

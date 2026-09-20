@@ -13,9 +13,9 @@ FilePath = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1),
 ]
 
-DEFAULT_MAX_LINES = 200
-MAX_LINES = 1000
-MAX_OUTPUT_CHARS = 64 * 1024
+DEFAULT_MAX_LINES = 100
+MAX_LINES = 250
+MAX_OUTPUT_CHARS = 16 * 1024
 MAX_LINE_CHARS = 16 * 1024
 
 

@@ -4,7 +4,13 @@ from typing import Annotated
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
-from zomah.state import ProjectState, ProjectStatePatch, ProjectStateRepository
+from zomah.state import (
+    Decision,
+    DecisionStatus,
+    ProjectState,
+    ProjectStatePatch,
+    ProjectStateRepository,
+)
 
 
 ProjectId = Annotated[
@@ -21,12 +27,37 @@ class GetProjectStateRequest(BaseModel):
     project_id: ProjectId
 
 
-class GetProjectStateResponse(BaseModel):
-    """Structured output returned by the get_project_state capability."""
+MAX_MODEL_DECISIONS = 20
+
+
+class DecisionWindow(BaseModel):
+    """Compact summary of canonical decision history visible to the model."""
 
     model_config = ConfigDict(extra="forbid")
 
-    project: ProjectState
+    total: int = Field(ge=0)
+    returned: int = Field(ge=0)
+    truncated: bool
+    by_status: dict[DecisionStatus, int]
+
+
+class ModelProjectState(ProjectState):
+    """Model-facing projection of canonical project state.
+
+    Current project truth remains complete, while decision history is bounded
+    so an old project cannot consume the worker's context window. Canonical
+    SQLite state is never truncated.
+    """
+
+    decision_window: DecisionWindow
+
+
+class GetProjectStateResponse(BaseModel):
+    """Structured, context-bounded output returned by get_project_state."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project: ModelProjectState
 
 
 class UpdateProjectStateRequest(BaseModel):
@@ -49,7 +80,7 @@ class UpdateProjectStateResponse(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    project: ProjectState
+    project: ModelProjectState
     previous_revision: int = Field(ge=0)
     new_revision: int = Field(ge=1)
     changed_fields: list[str]
@@ -67,7 +98,9 @@ def get_project_state(
     ProjectNotFound remain explicit for a future tool adapter to translate.
     """
 
-    return GetProjectStateResponse(project=repository.get(request.project_id))
+    return GetProjectStateResponse(
+        project=_model_project_state(repository.get(request.project_id))
+    )
 
 
 def update_project_state(
@@ -89,7 +122,7 @@ def update_project_state(
     project = repository.apply_patch(request.project_id, request.patch, actor=actor)
 
     return UpdateProjectStateResponse(
-        project=project,
+        project=_model_project_state(project),
         previous_revision=previous_revision,
         new_revision=project.revision,
         changed_fields=changed_fields,
@@ -119,3 +152,39 @@ def _changed_fields(patch: ProjectStatePatch) -> list[str]:
             fields.append(field)
 
     return fields
+
+
+def _model_project_state(state: ProjectState) -> ModelProjectState:
+    """Return a bounded decision window without changing canonical state."""
+
+    by_status = {status: 0 for status in DecisionStatus}
+    for decision in state.decisions:
+        by_status[decision.status] += 1
+
+    active = [
+        decision
+        for decision in state.decisions
+        if decision.status in {DecisionStatus.PROPOSED, DecisionStatus.ACCEPTED}
+    ]
+    historical = [
+        decision
+        for decision in state.decisions
+        if decision.status not in {DecisionStatus.PROPOSED, DecisionStatus.ACCEPTED}
+    ]
+
+    active.sort(key=lambda item: (item.created_at, item.id), reverse=True)
+    historical.sort(key=lambda item: (item.created_at, item.id), reverse=True)
+
+    selected: list[Decision] = active[:MAX_MODEL_DECISIONS]
+    if len(selected) < MAX_MODEL_DECISIONS:
+        selected.extend(historical[: MAX_MODEL_DECISIONS - len(selected)])
+
+    payload = state.model_dump()
+    payload["decisions"] = selected
+    payload["decision_window"] = DecisionWindow(
+        total=len(state.decisions),
+        returned=len(selected),
+        truncated=len(selected) < len(state.decisions),
+        by_status=by_status,
+    )
+    return ModelProjectState.model_validate(payload)

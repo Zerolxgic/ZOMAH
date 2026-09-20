@@ -14,8 +14,8 @@ DirectoryPath = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1),
 ]
 
-DEFAULT_MAX_ENTRIES = 200
-MAX_ENTRIES = 1000
+DEFAULT_MAX_ENTRIES = 100
+MAX_ENTRIES = 250
 
 
 class DirectoryEntry(BaseModel):

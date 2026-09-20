@@ -49,6 +49,8 @@ from .read_file import (
     read_file,
 )
 from .project_state import (
+    DecisionWindow,
+    ModelProjectState,
     GetProjectStateRequest,
     GetProjectStateResponse,
     UpdateProjectStateRequest,
@@ -94,6 +96,8 @@ __all__ = [
     "ReadFileResponse",
     "UnsupportedTextFile",
     "read_file",
+    "DecisionWindow",
+    "ModelProjectState",
     "GetProjectStateRequest",
     "GetProjectStateResponse",
     "UpdateProjectStateRequest",

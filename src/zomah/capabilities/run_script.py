@@ -26,7 +26,8 @@ ScriptName = Annotated[
     StringConstraints(strip_whitespace=True, min_length=1, max_length=64),
 ]
 ScriptArgumentValue = StrictStr | StrictInt | StrictBool
-MAX_STREAM_BYTES = 64 * 1024
+MAX_STDOUT_BYTES = 16 * 1024
+MAX_STDERR_BYTES = 8 * 1024
 
 
 class RunScriptRequest(BaseModel):
@@ -94,8 +95,8 @@ def run_script(
             process.wait()
 
         duration_ms = max(0, round((time.monotonic() - started) * 1000))
-        stdout, stdout_truncated = _read_bounded_text(stdout_file)
-        stderr, stderr_truncated = _read_bounded_text(stderr_file)
+        stdout, stdout_truncated = _read_bounded_text(stdout_file, MAX_STDOUT_BYTES)
+        stderr, stderr_truncated = _read_bounded_text(stderr_file, MAX_STDERR_BYTES)
 
     return RunScriptResponse(
         script=registered.name,
@@ -127,11 +128,11 @@ def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
         pass
 
 
-def _read_bounded_text(handle: object) -> tuple[str, bool]:
+def _read_bounded_text(handle: object, max_bytes: int) -> tuple[str, bool]:
     # TemporaryFile has seek/read but its concrete type is intentionally not
     # part of the public typing surface.
     handle.seek(0)  # type: ignore[attr-defined]
-    payload = handle.read(MAX_STREAM_BYTES + 1)  # type: ignore[attr-defined]
-    truncated = len(payload) > MAX_STREAM_BYTES
-    payload = payload[:MAX_STREAM_BYTES]
+    payload = handle.read(max_bytes + 1)  # type: ignore[attr-defined]
+    truncated = len(payload) > max_bytes
+    payload = payload[:max_bytes]
     return payload.decode("utf-8", errors="replace"), truncated

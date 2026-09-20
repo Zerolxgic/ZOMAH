@@ -36,7 +36,9 @@ def test_get_project_state_returns_canonical_state(tmp_path: Path):
         repository=repo,
     )
 
-    assert response.project == expected
+    assert expected.model_dump() == response.project.model_dump(
+        exclude={"decision_window"}
+    )
     assert response.project.revision == 0
 
 

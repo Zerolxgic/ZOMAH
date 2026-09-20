@@ -108,7 +108,7 @@ Tracing is infrastructure, not a model-visible action. The worker should never h
 
 #### `search_knowledge(query, scope?, limit?)`
 
-Search indexed project and knowledge material.
+Search project and knowledge material through a derived SQLite FTS5 index. ZOMAH refreshes that index incrementally immediately before the query, keeping index maintenance invisible to the worker.
 
 Returns structured results containing identifiers or paths, excerpts, relevance information, and useful metadata.
 

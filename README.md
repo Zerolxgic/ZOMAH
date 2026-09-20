@@ -20,7 +20,7 @@ Z1 has begun with the `ProjectState` persistence slice:
 - scoped, bounded `read_file` capability
 - scoped, bounded `list_directory` capability
 - structured `inspect_system` capability for explicit Linux system domains
-- lexical `search_knowledge` capability backed by SQLite FTS5
+- lexical `search_knowledge` capability backed by SQLite FTS5 with automatic incremental freshness
 - scoped UTF-8 `write_file` capability with separate write roots
 - scoped no-overwrite `move_file` capability for regular files
 - registry-only `run_script` execution with validated arguments and bounded results
@@ -78,7 +78,7 @@ This initializes the canonical SQLite database at `$XDG_DATA_HOME/zomah/zomah.db
 
 ## Knowledge retrieval
 
-`search_knowledge` uses a derived SQLite FTS5 index over approved UTF-8 text roots. The index is rebuildable and separate from canonical ProjectState storage.
+`search_knowledge` uses a derived SQLite FTS5 index over approved UTF-8 text roots. The index is rebuildable and separate from canonical ProjectState storage. ZOMAH refreshes the index incrementally before each search so new, changed, moved, or deleted documents become visible without a model-facing indexing tool.
 
 ## Write boundary
 

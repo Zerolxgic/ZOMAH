@@ -171,3 +171,104 @@ def test_query_without_searchable_terms_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="searchable term"):
         search_knowledge(SearchKnowledgeRequest(query="___"), index)
+
+
+def test_search_refreshes_new_file_without_manual_index_step(tmp_path: Path) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    index = make_index(tmp_path, root)
+
+    assert search_knowledge(SearchKnowledgeRequest(query="freshterm"), index).returned == 0
+
+    note = root / "fresh.md"
+    note.write_text("# Fresh\n\nfreshterm arrives after index creation\n", encoding="utf-8")
+
+    response = search_knowledge(SearchKnowledgeRequest(query="freshterm"), index)
+
+    assert response.returned == 1
+    assert response.results[0].path == str(note.resolve())
+
+
+def test_search_refreshes_write_file_mutations_automatically(tmp_path: Path) -> None:
+    from zomah.access import WriteScope
+    from zomah.capabilities.write_file import WriteFileRequest, write_file
+
+    root = tmp_path / "vault"
+    root.mkdir()
+    index = make_index(tmp_path, root)
+    write_scope = WriteScope.from_paths([root])
+    note = root / "note.md"
+
+    write_file(
+        WriteFileRequest(
+            path=str(note),
+            content="# Note\n\nautofreshalpha\n",
+            mode="create",
+        ),
+        write_scope,
+    )
+    assert search_knowledge(
+        SearchKnowledgeRequest(query="autofreshalpha"), index
+    ).returned == 1
+
+    write_file(
+        WriteFileRequest(
+            path=str(note),
+            content="# Note\n\nautofreshbeta with replacement text\n",
+            mode="replace",
+        ),
+        write_scope,
+    )
+
+    assert search_knowledge(
+        SearchKnowledgeRequest(query="autofreshalpha"), index
+    ).returned == 0
+    beta = search_knowledge(SearchKnowledgeRequest(query="autofreshbeta"), index)
+    assert beta.returned == 1
+    assert beta.results[0].path == str(note.resolve())
+
+
+def test_search_refreshes_move_file_paths_automatically(tmp_path: Path) -> None:
+    from zomah.access import WriteScope
+    from zomah.capabilities.move_file import MoveFileRequest, move_file
+
+    root = tmp_path / "vault"
+    inbox = root / "inbox"
+    archive = root / "archive"
+    inbox.mkdir(parents=True)
+    archive.mkdir()
+    source = inbox / "note.md"
+    destination = archive / "note.md"
+    source.write_text("# Note\n\nmovefreshterm\n", encoding="utf-8")
+
+    index = make_index(tmp_path, root)
+    before = search_knowledge(SearchKnowledgeRequest(query="movefreshterm"), index)
+    assert before.results[0].path == str(source.resolve())
+
+    move_file(
+        MoveFileRequest(source=str(source), destination=str(destination)),
+        WriteScope.from_paths([root]),
+    )
+
+    after = search_knowledge(SearchKnowledgeRequest(query="movefreshterm"), index)
+    assert after.returned == 1
+    assert after.results[0].path == str(destination.resolve())
+    assert not any(result.path == str(source.resolve()) for result in after.results)
+
+
+def test_search_refreshes_deleted_documents_automatically(tmp_path: Path) -> None:
+    root = tmp_path / "vault"
+    root.mkdir()
+    note = root / "note.md"
+    note.write_text("# Note\n\ndeletefreshterm\n", encoding="utf-8")
+    index = make_index(tmp_path, root)
+
+    assert search_knowledge(
+        SearchKnowledgeRequest(query="deletefreshterm"), index
+    ).returned == 1
+
+    note.unlink()
+
+    assert search_knowledge(
+        SearchKnowledgeRequest(query="deletefreshterm"), index
+    ).returned == 0

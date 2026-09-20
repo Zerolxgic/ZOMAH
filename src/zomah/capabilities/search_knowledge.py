@@ -52,13 +52,18 @@ def search_knowledge(
     request: SearchKnowledgeRequest,
     index: KnowledgeIndex,
 ) -> SearchKnowledgeResponse:
-    """Search indexed approved documents without loading whole files.
+    """Search approved documents without exposing index maintenance.
 
-    Index maintenance is an internal harness responsibility. This capability
-    only queries the current derived index. Elyria can follow a returned path
-    with `read_file` when full or bounded source content is actually needed.
+    The derived FTS index is refreshed immediately before every search. The
+    refresh is incremental: unchanged files are fingerprinted and skipped,
+    while new, changed, moved, or deleted documents are reconciled before the
+    query runs. Elyria never needs a separate indexing tool.
+
+    Returned results remain references/excerpts only; `read_file` is still the
+    capability for bounded source content.
     """
 
+    index.refresh()
     rows = index.search(request.query, limit=request.max_results)
     results = [
         KnowledgeResult(

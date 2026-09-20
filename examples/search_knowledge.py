@@ -24,7 +24,6 @@ def main() -> None:
     root = args.root.expanduser().resolve(strict=True)
     scope = ReadScope.from_paths([root])
     index = KnowledgeIndex(default_knowledge_db_path(), scope)
-    report = index.refresh()
     response = search_knowledge(
         SearchKnowledgeRequest(query=args.query, max_results=args.max_results),
         index,
@@ -32,16 +31,7 @@ def main() -> None:
 
     print(
         json.dumps(
-            {
-                "refresh": {
-                    "scanned_files": report.scanned_files,
-                    "indexed_files": report.indexed_files,
-                    "unchanged_files": report.unchanged_files,
-                    "removed_files": report.removed_files,
-                    "skipped_files": report.skipped_files,
-                },
-                "search": response.model_dump(mode="json"),
-            },
+            response.model_dump(mode="json"),
             indent=2,
         )
     )

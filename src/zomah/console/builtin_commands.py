@@ -7,15 +7,18 @@ render supplied state and registry metadata. No view reaches a model.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from zomah.console.commands import (
     CommandContext,
     CommandRegistry,
     CommandResult,
     ConsoleCommand,
+    StatusUpdate,
 )
 from zomah.capabilities import GetProjectStateResponse
 from zomah.capability_runtime import CapabilityError
-from zomah.console.status import STATUS_LABELS, status_values
+from zomah.console.status import STATUS_LABELS, ConsoleStatus, status_values
 from zomah.user_boundary import invoke_registered_user_capability
 
 COMPOSER_CONTROLS: tuple[tuple[str, str], ...] = (
@@ -63,7 +66,7 @@ def status_view(context: CommandContext, arguments: str) -> CommandResult:
 
 
 def project_view(context: CommandContext, arguments: str) -> CommandResult:
-    project_id = context.active_project_id
+    project_id = context.status.active_project_id
     if project_id is None:
         return CommandResult(
             title="Project",
@@ -87,7 +90,22 @@ def project_view(context: CommandContext, arguments: str) -> CommandResult:
     # The envelope carries exactly one of error / result.
     if envelope.error is not None:
         return _capability_error_result(envelope.error)
-    return _project_result(GetProjectStateResponse.model_validate(envelope.result))
+    response = GetProjectStateResponse.model_validate(envelope.result)
+    return replace(
+        _project_result(response),
+        status_update=_label_from_canonical(response.project.id, response.project.name),
+    )
+
+
+def _label_from_canonical(project_id: str, name: str) -> StatusUpdate:
+    """Set the display label from a canonical read, if the id is still active."""
+
+    def update(status: ConsoleStatus) -> ConsoleStatus:
+        if status.active_project_id != project_id:
+            return status
+        return replace(status, project=name)
+
+    return update
 
 
 def _capability_error_result(error: CapabilityError) -> CommandResult:

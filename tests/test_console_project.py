@@ -17,6 +17,7 @@ from zomah.console import (
     CommandResult,
     Composer,
     ConsoleCommand,
+    ConsoleStatus,
     OperatorConsole,
 )
 from zomah.console.operator import OperatorAccess
@@ -99,7 +100,7 @@ def test_active_project_without_operator_access_is_an_error() -> None:
         ]
         assert app.query_one(".entry.result").has_class("error")
 
-    run_console(scenario, active_project_id="zomah")
+    run_console(scenario, status=ConsoleStatus(active_project_id="zomah"))
 
 
 def test_project_reads_canonical_state_through_user_boundary(
@@ -138,7 +139,7 @@ def test_project_reads_canonical_state_through_user_boundary(
         assert lines[12].startswith("Updated: ") and lines[12].endswith(" by zerrius")
         assert not app.query_one(".entry.result").has_class("error")
 
-    run_console(scenario, active_project_id="zomah", operator_access=access)
+    run_console(scenario, status=ConsoleStatus(active_project_id="zomah"), operator_access=access)
 
     assert boundary_calls == [("get_project_state", {"project_id": "zomah"}, "zerrius")]
     (record,) = access.trace_store.recent()
@@ -165,7 +166,7 @@ def test_project_output_renders_literally(
         assert "[bold]ZOMAH[/bold] (zomah)" in output
         assert "[red]not markup[/red]\nsecond line" in output
 
-    run_console(scenario, active_project_id="zomah", operator_access=access)
+    run_console(scenario, status=ConsoleStatus(active_project_id="zomah"), operator_access=access)
 
 
 def test_missing_project_renders_normalized_error(access: OperatorAccess) -> None:
@@ -178,7 +179,7 @@ def test_missing_project_renders_normalized_error(access: OperatorAccess) -> Non
         ]
         assert app.query_one(".entry.result").has_class("error")
 
-    run_console(scenario, active_project_id="nope", operator_access=access)
+    run_console(scenario, status=ConsoleStatus(active_project_id="nope"), operator_access=access)
 
     (record,) = access.trace_store.recent()
     assert (record.worker, record.outcome, record.error_code) == (
@@ -204,7 +205,7 @@ def test_uninitialized_storage_renders_redacted_retryable_error(tmp_path: Path) 
             "This may succeed if retried."
         ]
 
-    run_console(scenario, active_project_id="zomah", operator_access=access)
+    run_console(scenario, status=ConsoleStatus(active_project_id="zomah"), operator_access=access)
 
 
 def test_truncated_decision_history_is_explained(
@@ -235,7 +236,7 @@ def test_truncated_decision_history_is_explained(
             "Canonical history is complete in storage."
         )
 
-    run_console(scenario, active_project_id="zomah", operator_access=access)
+    run_console(scenario, status=ConsoleStatus(active_project_id="zomah"), operator_access=access)
 
 
 def test_background_command_does_not_block_ui_and_keeps_transcript_order() -> None:

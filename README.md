@@ -83,6 +83,7 @@ src/zomah/user_boundary.py           human operator adapter over the capability 
 src/zomah/console/operator.py        operator identity + injected capability dependencies
 tests/test_user_boundary.py          operator boundary tests
 tests/test_console_project.py        /project capability read path tests
+tests/test_console_session.py        console session-state ownership tests
 tests/test_capability_runtime.py     shared invocation contract tests
 src/zomah/tracing.py                 minimal local capability trace store
 tests/test_tracing.py                automatic tracing boundary tests
@@ -118,6 +119,8 @@ The console currently provides the header, transcript, and multiline composer on
 Typing `/` lists the registered console commands (`/help`, `/project`, `/status`, `/tools`) alphabetically, filtered by prefix. Up/Down move the highlight, Enter completes the highlighted command into the composer, and Esc dismisses the list. The console command registry (`src/zomah/console/commands.py`) is separate from the capability registry and grants no machine authority.
 
 Any submission starting with `/` is routed as a command (`src/zomah/console/routing.py`); unknown commands and unsupported arguments return an error result and never fall through as ordinary input. The built-in views live in `src/zomah/console/builtin_commands.py`: `/help` lists commands and composer keys, `/status` shows the supplied `ConsoleStatus`, and `/tools` shows `CapabilityRegistry` metadata (registry agent exposure is not live model availability). `/project` reads canonical ProjectState for the configured `--project` id through the human capability boundary; without `--project` it reports that no active canonical project is configured and invokes nothing.
+
+`ConsoleStatus` (`src/zomah/console/status.py`) is the single owner of transient console session state: the active canonical project id, the human-facing project label, ZOMAH state, model, live tool count, and context usage. The header and `/status` both render it, and `/project` takes its project id from it. `--project` sets only the id, so the header shows `zomah (not read yet)` until a successful `/project` read labels it from canonical state (`ZOMAH (zomah)`). Session updates are applied on the UI loop through `OperatorConsole.set_status`; it is not canonical ProjectState.
 
 ## Operator capability boundary
 

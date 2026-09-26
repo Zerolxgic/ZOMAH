@@ -268,7 +268,6 @@ class OperatorConsole(App[None]):
         commands: CommandRegistry | None = None,
         capabilities: CapabilityRegistry | None = None,
         *,
-        active_project_id: str | None = None,
         operator_access: OperatorAccess | None = None,
     ) -> None:
         super().__init__()
@@ -277,7 +276,6 @@ class OperatorConsole(App[None]):
         # Capabilities are invoked only through the user boundary, using the
         # injected operator access; /tools reads registry metadata only.
         self._capabilities = capabilities or default_capability_registry()
-        self._active_project_id = active_project_id
         self._operator_access = operator_access
 
     @property
@@ -324,7 +322,10 @@ class OperatorConsole(App[None]):
         )
 
     def set_status(self, status: ConsoleStatus) -> None:
-        """Re-render the header from caller-supplied status."""
+        """Replace the session state and re-render the header from it.
+
+        The single write path for session context. Call it on the UI loop.
+        """
 
         self._status = status
         for name, value in status_values(status).items():
@@ -353,7 +354,9 @@ class OperatorConsole(App[None]):
                 )
                 entries.append(pending)
             else:
-                entries.append(self._result_entry(run_command(routed, self._command_context())))
+                result = run_command(routed, self._command_context())
+                entries.append(self._result_entry(result))
+                self._apply_status_update(result)
         transcript = self.query_one("#transcript", VerticalScroll)
         await transcript.mount_all(entries)
         transcript.scroll_end(animate=False)
@@ -368,9 +371,12 @@ class OperatorConsole(App[None]):
             status=self._status,
             commands=self._commands,
             capabilities=self._capabilities,
-            active_project_id=self._active_project_id,
             operator_access=self._operator_access,
         )
+
+    def _apply_status_update(self, result: CommandResult) -> None:
+        if result.status_update is not None:
+            self.set_status(result.status_update(self._status))
 
     @staticmethod
     def _result_entry(result: CommandResult) -> Static:
@@ -397,12 +403,18 @@ class OperatorConsole(App[None]):
             result = CommandResult(
                 title=f"{routed.name} failed unexpectedly.", is_error=True
             )
+        # Resumed on the UI event loop: only here are widgets and session
+        # state touched; the command itself ran in a worker thread.
         entry = self._result_entry(result)
+        self._apply_status_update(result)
         pending.update(entry.content)
         pending.set_classes(entry.classes)
         self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
-def main(argv: Sequence[str] | None = None) -> None:
+
+def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
+    """Build the console from command-line options without running it."""
+
     parser = argparse.ArgumentParser(prog="zomah-console")
     parser.add_argument(
         "--project",
@@ -415,7 +427,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="operator id recorded as operator:<id> in traces (default: OS user)",
     )
     args = parser.parse_args(argv)
-    OperatorConsole(
-        active_project_id=args.project_id,
+    return OperatorConsole(
+        ConsoleStatus(active_project_id=args.project_id),
         operator_access=build_default_operator_access(args.operator),
-    ).run()
+    )
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    build_console(argv).run()

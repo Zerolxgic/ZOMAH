@@ -18,28 +18,36 @@ from zomah.console.operator import OperatorAccess
 from zomah.console.status import ConsoleStatus
 
 
+StatusUpdate = Callable[[ConsoleStatus], ConsoleStatus]
+
+
 @dataclass(frozen=True, slots=True)
 class CommandResult:
-    """Structured console output for one command, rendered as plain text."""
+    """Structured console output for one command, rendered as plain text.
+
+    ``status_update`` is an optional pure function the app applies to the
+    current session status on the UI loop after rendering; views never
+    mutate session state themselves.
+    """
 
     title: str
     lines: tuple[str, ...] = ()
     is_error: bool = False
+    status_update: StatusUpdate | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class CommandContext:
     """Inputs a console command may render from.
 
-    ``active_project_id`` identifies canonical ProjectState and is distinct
-    from ``status.project``, which is header display text. ``operator_access``
-    is ``None`` when the console was started without capability access.
+    ``status`` is a snapshot of session state taken at submission; the
+    active canonical project id comes from it. ``operator_access`` is
+    ``None`` when the console was started without capability access.
     """
 
     status: ConsoleStatus
     commands: CommandRegistry
     capabilities: CapabilityRegistry
-    active_project_id: str | None = None
     operator_access: OperatorAccess | None = None
 
 

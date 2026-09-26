@@ -1,4 +1,8 @@
-"""Console status view data shared by the header and ``/status``."""
+"""Operator Console session state, rendered by the header and ``/status``.
+
+``ConsoleStatus`` is the single owner of transient console session context.
+It is not canonical ProjectState: the repository owns that.
+"""
 
 from __future__ import annotations
 
@@ -11,8 +15,15 @@ PLACEHOLDER_UNAVAILABLE = "unavailable"
 
 @dataclass(frozen=True, slots=True)
 class ConsoleStatus:
-    """Header view data. ``None`` means no live source exists for the field."""
+    """Transient console session context. ``None`` means no live source.
 
+    ``active_project_id`` is the canonical ProjectState id used for capability
+    requests. ``project`` is a human-facing label (a name or folder); it is
+    never used as an id, and is only filled from canonical state once that
+    state has been read.
+    """
+
+    active_project_id: str | None = None
     project: str | None = None
     zomah_state: str | None = None
     model: str | None = None
@@ -30,6 +41,20 @@ STATUS_LABELS = {
 }
 
 
+NOT_READ_YET = "not read yet"
+
+
+def project_display(status: ConsoleStatus) -> str:
+    """One deterministic project rendering for the header and ``/status``."""
+
+    label, project_id = status.project, status.active_project_id
+    if label and project_id:
+        return f"{label} ({project_id})"
+    if project_id:
+        return f"{project_id} ({NOT_READ_YET})"
+    return label or PLACEHOLDER_NOT_SET
+
+
 def status_values(status: ConsoleStatus) -> dict[str, str]:
     """Display values keyed like ``STATUS_LABELS``, with explicit placeholders."""
 
@@ -38,7 +63,7 @@ def status_values(status: ConsoleStatus) -> dict[str, str]:
     else:
         context = f"{status.context_used} / {status.context_limit}"
     return {
-        "project": status.project or PLACEHOLDER_NOT_SET,
+        "project": project_display(status),
         "state": status.zomah_state or PLACEHOLDER_NOT_CONNECTED,
         "model": status.model or PLACEHOLDER_NOT_CONNECTED,
         "tools": (

@@ -81,6 +81,8 @@ src/zomah/model_boundary.py          model request/error/trace adapter
 src/zomah/tracing.py                 minimal local capability trace store
 tests/test_tracing.py                automatic tracing boundary tests
 src/zomah/console/app.py             Operator Console shell (Textual)
+src/zomah/console/commands.py        console slash-command registry
+tests/test_console_commands.py       command registry tests
 tests/test_operator_console.py       console layout and composer tests
 ```
 
@@ -100,7 +102,9 @@ This initializes the canonical SQLite database at `$XDG_DATA_HOME/zomah/zomah.db
 zomah-console          # or: python -m zomah.console
 ```
 
-The console currently provides the header, transcript, and multiline composer only. Header fields without a live runtime source show explicit placeholders, and submitted text is echoed to the transcript without invoking any model or capability. Enter submits, Shift+Enter inserts a newline (requires a terminal that supports the kitty keyboard protocol), Ctrl+A selects all, and Ctrl+Q quits.
+The console currently provides the header, transcript, and multiline composer only. Header fields without a live runtime source show explicit placeholders, and submitted text is echoed to the transcript without invoking any model or capability. Enter submits, Shift+Enter inserts a newline (requires a terminal that supports the kitty keyboard protocol; Ctrl+J is the compatibility fallback), Ctrl+A selects all, and Ctrl+Q quits.
+
+Typing `/` lists the registered console commands (`/help`, `/project`, `/status`, `/tools`) alphabetically, filtered by prefix. Up/Down move the highlight, Enter completes the highlighted command into the composer, and Esc dismisses the list. Commands are discovered and completed only; none executes yet. The console command registry (`src/zomah/console/commands.py`) is separate from the capability registry.
 
 ## Knowledge retrieval
 

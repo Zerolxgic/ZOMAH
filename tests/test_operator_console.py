@@ -7,7 +7,14 @@ from textual import events
 from textual.pilot import Pilot
 from textual.widgets import Static
 
-from zomah.console import Composer, ConsoleStatus, OperatorConsole
+from zomah.console import (
+    CommandRegistry,
+    CommandSuggestions,
+    Composer,
+    ConsoleCommand,
+    ConsoleStatus,
+    OperatorConsole,
+)
 
 Scenario = Callable[[OperatorConsole, Pilot], Awaitable[None]]
 
@@ -17,9 +24,10 @@ def run_console(
     *,
     size: tuple[int, int] = (80, 24),
     status: ConsoleStatus | None = None,
+    commands: CommandRegistry | None = None,
 ) -> None:
     async def runner() -> None:
-        app = OperatorConsole(status)
+        app = OperatorConsole(status, commands)
         async with app.run_test(size=size) as pilot:
             await scenario(app, pilot)
 
@@ -236,3 +244,234 @@ def test_layout_keeps_three_regions_ordered_across_resizes() -> None:
                 assert region.width == width
 
     run_console(scenario)
+
+
+def suggestion_names(app: OperatorConsole) -> list[str]:
+    suggestions = app.query_one(CommandSuggestions)
+    if not suggestions.display:
+        return []
+    return [
+        suggestions.get_option_at_index(index).id
+        for index in range(suggestions.option_count)
+    ]
+
+
+def highlighted_name(app: OperatorConsole) -> str | None:
+    return app.query_one(CommandSuggestions).highlighted_name
+
+
+def test_slash_shows_all_commands_alphabetically_with_descriptions() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        assert suggestion_names(app) == []
+        await pilot.press("slash")
+        await pilot.pause()
+        assert suggestion_names(app) == ["/help", "/project", "/status", "/tools"]
+        assert highlighted_name(app) == "/help"
+        prompt = str(app.query_one(CommandSuggestions).get_option_at_index(1).prompt)
+        assert "/project" in prompt
+        assert "active project" in prompt
+
+    run_console(scenario)
+
+
+def test_prefix_filters_commands_in_alphabetical_order() -> None:
+    registry = CommandRegistry()
+    for name in ("/stop", "/status", "/help", "/save"):
+        registry.register(ConsoleCommand(name, f"{name} description"))
+
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await pilot.press("slash", "s")
+        await pilot.pause()
+        assert suggestion_names(app) == ["/save", "/status", "/stop"]
+        await pilot.press("t")
+        await pilot.pause()
+        assert suggestion_names(app) == ["/status", "/stop"]
+        await pilot.press("backspace", "backspace")
+        await pilot.pause()
+        assert suggestion_names(app) == ["/help", "/save", "/status", "/stop"]
+
+    run_console(scenario, commands=registry)
+
+
+def test_default_prefix_p_shows_only_project() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await pilot.press("slash", "p")
+        await pilot.pause()
+        assert suggestion_names(app) == ["/project"]
+
+    run_console(scenario)
+
+
+def test_no_matching_command_hides_suggestions_and_enter_submits() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await pilot.press("slash", "x")
+        await pilot.pause()
+        assert suggestion_names(app) == []
+        await pilot.press("enter")
+        await pilot.pause()
+        assert transcript_entries(app) == ["operator\n/x"]
+
+    run_console(scenario)
+
+
+def test_up_and_down_move_highlight_without_moving_cursor() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        await pilot.press("slash")
+        await pilot.pause()
+        await pilot.press("down", "down")
+        assert highlighted_name(app) == "/status"
+        await pilot.press("up")
+        assert highlighted_name(app) == "/project"
+        assert composer.text == "/"
+        assert composer.cursor_location == (0, 1)
+
+    run_console(scenario)
+
+
+def test_up_and_down_still_move_cursor_without_suggestions() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        await pilot.press("a", "shift+enter", "b", "up")
+        assert composer.cursor_location == (0, 1)
+        await pilot.press("down")
+        assert composer.cursor_location == (1, 1)
+
+    run_console(scenario)
+
+
+def test_enter_completes_highlighted_command_without_submitting() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        await pilot.press("slash")
+        await pilot.pause()
+        await pilot.press("down", "enter")
+        await pilot.pause()
+        assert composer.text == "/project"
+        assert composer.cursor_location == (0, len("/project"))
+        assert suggestion_names(app) == []
+        assert transcript_entries(app) == []
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert transcript_entries(app) == ["operator\n/project"]
+        assert composer.text == ""
+
+    run_console(scenario)
+
+
+def test_fast_typing_then_enter_uses_current_text_not_stale_suggestions() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        # No pause between keys: Enter must see "/t", not an earlier state.
+        await pilot.press("slash", "t", "enter")
+        await pilot.pause()
+        assert composer.text == "/tools"
+        assert transcript_entries(app) == []
+
+    run_console(scenario)
+
+
+def test_escape_dismisses_suggestions_and_preserves_text() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        await pilot.press("slash", "s")
+        await pilot.pause()
+        assert suggestion_names(app) == ["/status"]
+        await pilot.press("escape")
+        await pilot.pause()
+        assert suggestion_names(app) == []
+        assert composer.text == "/s"
+        assert app.focused is composer
+
+        await pilot.press("enter")
+        await pilot.pause()
+        assert transcript_entries(app) == ["operator\n/s"]
+
+    run_console(scenario)
+
+
+def test_editing_after_escape_reevaluates_suggestions() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await pilot.press("slash", "escape", "t")
+        await pilot.pause()
+        assert suggestion_names(app) == ["/tools"]
+
+    run_console(scenario)
+
+
+def test_suggestions_disappear_when_text_stops_being_a_command_prefix() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await pilot.press("slash", "h")
+        await pilot.pause()
+        assert suggestion_names(app) == ["/help"]
+        await pilot.press("space")
+        await pilot.pause()
+        assert suggestion_names(app) == []
+
+        await pilot.press("ctrl+a", *"hi /")
+        await pilot.pause()
+        assert suggestion_names(app) == []
+
+    run_console(scenario)
+
+
+def test_ctrl_j_inserts_newline_without_submitting() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        await pilot.press("a", "ctrl+j", "b")
+        assert composer.text == "a\nb"
+        assert composer.cursor_location == (1, 1)
+        assert transcript_entries(app) == []
+
+    run_console(scenario)
+
+
+def test_ctrl_j_replaces_selection() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        await pilot.press(*"abc", "shift+left", "ctrl+j")
+        assert composer.text == "ab\n"
+        await pilot.press("ctrl+a", "ctrl+j")
+        assert composer.text == "\n"
+
+    run_console(scenario)
+
+
+def test_composer_stays_on_screen_with_suggestions_in_small_terminals() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await pilot.press("slash")
+        await pilot.pause()
+        for width, height in ((80, 24), (60, 14), (40, 12), (40, 10), (80, 24)):
+            await pilot.resize_terminal(width, height)
+            await pilot.pause()
+            header = app.query_one("#header").region
+            suggestions = app.query_one(CommandSuggestions).region
+            composer = app.query_one(Composer).region
+
+            # The list may cover the transcript, never the header or composer.
+            assert header.y == 0
+            assert header.bottom <= suggestions.y
+            assert suggestions.bottom == composer.y
+            assert suggestions.height >= 2
+            assert composer.bottom == height
+            assert composer.height >= 3
+
+        assert suggestion_names(app) == ["/help", "/project", "/status", "/tools"]
+
+    run_console(scenario)
+
+
+def test_highlighted_suggestion_scrolls_into_view_when_list_is_clipped() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        suggestions = app.query_one(CommandSuggestions)
+        await pilot.press("slash")
+        await pilot.pause()
+        await pilot.press("down", "down", "down")
+        await pilot.pause()
+        assert highlighted_name(app) == "/tools"
+        visible_rows = suggestions.scrollable_content_region.height
+        assert visible_rows < 4
+        assert suggestions.scroll_y + visible_rows >= 4
+
+    run_console(scenario, size=(40, 12))

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "zomah"
 version = "0.1.0"
-description = "Zerrius's Obviously Minimal Agent Harness"
+description = "Zerrius's Orchestrated Minimal Agent Harness"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

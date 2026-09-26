@@ -1,12 +1,12 @@
 # ZOMAH
 
-**Zerrius's Obviously Minimal Agent Harness**
+**Zerrius's Orchestrated Minimal Agent Harness**
 
 ZOMAH is a deliberately small local control plane for capable AI workers, starting with Elyria.
 
 ## Current implementation
 
-Z1 has begun with the `ProjectState` persistence slice:
+The original ZOMAH v0 substrate is implemented and verified. The current capability surface includes:
 
 - Pydantic v2 contracts
 - stdlib `sqlite3`
@@ -28,6 +28,18 @@ Z1 has begun with the `ProjectState` persistence slice:
 - mandatory local SQLite tracing at the model-facing capability boundary
 
 No agent loop, generic tool registry, model client, or framework has been added yet.
+
+### Current direction
+
+The next architectural slice is a shared Capability Registry followed by the ZOMAH Operator Console.
+
+Accepted next-phase work includes:
+
+- a shared user/agent capability registry;
+- an interactive terminal Operator Console;
+- integration of the verified deterministic tooling workspace;
+- an isolated `Qwen3-Embedding-0.6B` semantic-retrieval experiment before retrieval integration;
+- later connection of Qwen3.5-9B through the model-facing capability boundary.
 
 Project-state mutation keeps authorization outside model input: workers may propose decisions, but ZOMAH stamps actor/time provenance and stores model-originated decisions as `proposed`. Decision acceptance and lifecycle transitions use a separate internal/admin repository path.
 

@@ -35,6 +35,120 @@ ZOMAH owns the boundary between the worker and durable machine state.
                          |
                     ProjectState
 ```
+### Capability and interface model
+
+ZOMAH capabilities are implementation units owned by the control plane.
+
+Human-facing commands and model-facing tools are interfaces into those capabilities rather than separate implementations.
+
+```text
+                         Human Operator
+                              |
+                       Operator Console
+                              |
+                              v
+                     +-------------------+
+                     | Command Registry  |
+                     +---------+---------+
+                               |
+                               |
+Worker / Model                 |
+     |                         |
+agent adapter                  |
+     |                         |
+     +-------------+-----------+
+                   |
+                   v
+          +--------------------+
+          | Capability Registry|
+          +---------+----------+
+                    |
+             invocation boundary
+                    |
+                    v
+               +---------+
+               |  ZOMAH  |
+               +----+----+
+                    |
+        +-----------+-----------+
+        |           |           |
+      State     Retrieval     Tools
+```
+
+The Capability Registry describes what ZOMAH can expose.
+
+The Command Registry describes how the Operator Console exposes user-facing operations.
+
+A slash command may invoke a registered capability, but not every slash command is a capability. Interface-only commands such as help, console status, or session management remain Operator Console concerns.
+
+Likewise, not every registered capability must be visible to every worker or session.
+
+Capability exposure may depend on:
+
+- lifecycle state;
+- authority class;
+- active project;
+- worker identity;
+- session policy;
+- runtime availability;
+- dependency availability.
+
+The number of tools shown as available to a model therefore means:
+
+> capabilities currently exposed to that model in the active project and session
+
+rather than every capability installed in ZOMAH.
+
+The Operator Console and model adapters must not bypass ZOMAH validation, permissions, tracing, provenance, lifecycle rules, or authorization boundaries.
+
+### Operator Console
+
+The Operator Console is ZOMAH's planned primary human interface.
+
+The first implementation is planned as an interactive terminal UI using Textual.
+
+Its accepted layout contains three persistent regions:
+
+```text
++------------------------------------------------------+
+| ZOMAH                                                |
+| Project / folder                     ZOMAH state     |
+| Model                                available tools |
+| Context usage / context limit                        |
++------------------------------------------------------+
+
++------------------------------------------------------+
+| Session / transcript                                 |
+|                                                      |
+| conversation, results, tool activity, status         |
+|                                                      |
++------------------------------------------------------+
+
++------------------------------------------------------+
+| Composer                                             |
+| multiline text / slash commands / attachments        |
++------------------------------------------------------+
+```
+
+The persistent header is a view over session state. It is not itself the source of project, model, tool, or context truth.
+
+The composer should behave like a modern multiline message editor.
+
+Required first-pass behavior includes:
+
+- Enter submits;
+- Shift+Enter inserts a newline;
+- normal cursor movement and text selection;
+- select-all and bulk deletion or replacement;
+- copy and paste;
+- undo and redo;
+- clipboard image attachment;
+- slash-command discovery;
+- alphabetical prefix filtering;
+- arrow-key command navigation;
+- keyboard shortcuts as optional accelerators.
+
+Slash commands should be discoverable without requiring the operator to memorize keybindings.
 
 ### Worker owns
 
@@ -56,6 +170,8 @@ ZOMAH owns the boundary between the worker and durable machine state.
 - knowledge indexing hooks
 - normalized tool results
 - verification hooks
+- capability registration and exposure policy
+- interface-independent capability invocation
 
 ### External components own
 
@@ -173,6 +289,37 @@ The worker does not rewrite the entire state record. Actor identity is injected 
 Execute a registered or explicitly approved script. Approval binds to the exact registered executable bytes, not only to a pathname. Registered executables must live outside every configured model `WriteScope`; ZOMAH stores a SHA-256 digest when the script is approved and verifies path resolution, executability, and the digest before every run. Any change requires explicit re-registration.
 
 Arbitrary shell execution is outside v0.
+
+### Retrieval implementation boundary
+
+`search_knowledge` is the stable worker-facing retrieval capability.
+
+The implementation underneath it may evolve without expanding the model-visible tool surface.
+
+Current retrieval direction:
+
+```text
+search_knowledge
+       |
+       v
+retrieval subsystem
+       |
+       +-- lexical retrieval
+       |
+       +-- semantic retrieval experiment
+               |
+               +-- Qwen3-Embedding-0.6B
+```
+
+`Qwen3-Embedding-0.6B` is the selected model for the first isolated semantic-retrieval experiment.
+
+The embedding model is not intended to appear as a direct worker-facing tool. A worker asks ZOMAH to search knowledge; ZOMAH determines which retrieval mechanisms participate.
+
+Semantic retrieval must be evaluated before becoming part of the active retrieval path.
+
+A reranker or relevance judge is not assumed to be necessary. It should be introduced only if evaluation demonstrates a retrieval failure that it has a clear job to solve.
+
+Retrieval components may judge semantic similarity or relevance, but they do not replace deterministic evidence, provenance, lifecycle validation, policy enforcement, or machine-state observation.
 
 ## 5. ProjectState v0
 
@@ -293,6 +440,33 @@ future worker -+
 A worker may retain capabilities that ZOMAH does not expose.
 
 ZOMAH only supplies missing shared substrate.
+
+### Deterministic tooling integration
+
+ZOMAH may expose separately developed deterministic tools through capability adapters.
+
+Integration should preserve each tool's existing contract, evidence boundary, lifecycle state, and failure behavior.
+
+ZOMAH should prefer wrapping an existing verified tool over rewriting its implementation.
+
+Conceptually:
+
+```text
+Capability Registry
+        |
+        v
+    Tool Adapter
+        |
+        +-- native ZOMAH Python capability
+        |
+        +-- external deterministic process
+```
+
+This allows existing ZOMAH capabilities and standalone deterministic tools to share one invocation architecture without requiring them to share one implementation language or codebase.
+
+Some capabilities may be available to both the human operator and the worker. Others may remain internal infrastructure.
+
+Policy-enforcement capabilities such as action gating may be mandatory parts of the invocation path rather than optional tools a worker chooses whether to call.
 
 ## 9. v0 success condition
 

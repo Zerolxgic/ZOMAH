@@ -1,12 +1,13 @@
 # ZOMAH
 
-**Zerrius's Obviously Minimal Agent Harness**
+**Zerrius's Orchestrated Minimal Agent Harness**
 
 ## Status
 
-**Phase:** Inception / Architecture  
-**Project state:** Active  
-**Implementation state:** Not started
+**Phase:** Operator Console / Orchestration Foundation
+**Project state:** Active
+**Implementation state:** Core v0 substrate implemented and verified
+**Verified baseline:** 121 passing tests
 
 ## Purpose
 
@@ -369,8 +370,108 @@ Establish:
 
 Connect Qwen3.5-9B through the selected local inference runtime and validate complete tool loops against real workstation tasks.
 
+## Current Development Direction
+
+The original ZOMAH v0 control-plane substrate is implemented and verified.
+
+The next phase extends that substrate without replacing its existing authority, validation, state, retrieval, tracing, or verification boundaries.
+
+### Capability Registry
+
+ZOMAH will add a small explicit Capability Registry as the shared description of capabilities available through the harness.
+
+The same registered capability may be exposed through multiple interfaces:
+
+- a user-facing Operator Console;
+- a model-facing tool adapter;
+- internal ZOMAH orchestration where appropriate.
+
+These interfaces must resolve to the same underlying capability implementation rather than duplicate behavior.
+
+The registry is not intended to become a dynamic plugin framework. The first implementation should remain explicit and small.
+
+### Operator Console
+
+ZOMAH will add an interactive terminal user interface as its primary human operator surface.
+
+The accepted first design consists of:
+
+- a persistent header showing active project/folder and ZOMAH state;
+- the active model and the number of tools available to that model in the current session;
+- current session token/context-window utilization;
+- a transcript/work region;
+- a multiline chat-style composer;
+- normal copy, paste, selection, undo, redo, and bulk deletion behavior;
+- clipboard image attachments;
+- discoverable slash commands with alphabetical prefix filtering;
+- keyboard shortcuts as accelerators rather than required knowledge.
+
+Textual is the slated Python TUI framework for the first implementation.
+
+The Operator Console is an interface into ZOMAH. It does not bypass ZOMAH permissions, validation, tracing, provenance, lifecycle rules, or action authorization.
+
+### Deterministic Tool Integration
+
+The separately developed deterministic tooling workspace is now an integration target for ZOMAH.
+
+Those tools retain their existing contracts and evidence boundaries. ZOMAH should expose and orchestrate them rather than merge their responsibilities into a monolithic agent tool.
+
+Capabilities may be surfaced to:
+
+- the human operator;
+- the active worker/model;
+- ZOMAH internally;
+
+according to their authority, lifecycle state, and project/session policy.
+
+### Semantic Retrieval Experiment
+
+`Qwen3-Embedding-0.6B` is the selected model for ZOMAH's first local semantic-retrieval experiment.
+
+The initial experiment remains isolated from the production retrieval path.
+
+Its purpose is to establish whether embedding-based retrieval materially improves candidate discovery before introducing a reranker or deeper retrieval architecture.
+
+If accepted after evaluation, semantic retrieval should sit behind the stable `search_knowledge` capability rather than appear as a separate model-facing embedding tool.
+
+The existing deterministic substrate remains responsible for machine truth, provenance, validation, lifecycle enforcement, policy boundaries, and controlled handoff.
+
+### Current Build Sequence
+
+```text
+verified pre-console baseline
+        |
+        v
+Capability Registry v0
+        |
+        v
+existing capability through registry
+        |
+        v
+Operator Console foundation
+        |
+        v
+deterministic tool integration
+        |
+        v
+Qwen3-Embedding-0.6B isolated experiment
+        |
+        v
+semantic retrieval integration if justified
+        |
+        v
+Qwen3.5-9B worker integration
+
+
+Finally, the existing `## Current Decision` probably still describes ZOMAH as merely beginning as the smallest viable control plane. We shouldn't erase that historical decision; instead, change the section heading to:
+
+```markdown
+## Foundational Decision
+
 ## Current Decision
 
-ZOMAH will begin as the smallest viable local control plane for Elyria.
+ZOMAH will remain a minimal local control plane while adding explicit orchestration across its verified capabilities.
 
-We will expand it only in response to demonstrated needs rather than anticipated ones.
+The immediate implementation target is the Capability Registry followed by the Operator Console.
+
+Expansion beyond this direction remains evidence-driven.

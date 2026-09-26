@@ -77,7 +77,9 @@ tests/test_search_knowledge.py     retrieval boundary tests
 tests/test_write_file.py           file-write boundary tests
 tests/test_move_file.py            file-move boundary tests
 tests/test_run_script.py             execution-boundary tests
-src/zomah/model_boundary.py          model request/error/trace adapter
+src/zomah/capability_runtime.py      interface-neutral validate/trace/invoke/normalize core
+src/zomah/model_boundary.py          model-facing adapter over the capability runtime
+tests/test_capability_runtime.py     shared invocation contract tests
 src/zomah/tracing.py                 minimal local capability trace store
 tests/test_tracing.py                automatic tracing boundary tests
 src/zomah/console/app.py             Operator Console shell (Textual)
@@ -126,7 +128,7 @@ Any submission starting with `/` is routed as a command (`src/zomah/console/rout
 
 ### Model-facing error boundary
 
-Capability implementations keep native Python exceptions for development. Before results reach a model, `zomah.model_boundary.invoke_model_capability` validates the request and returns a stable `ok/result/error` envelope. Unexpected exception details are redacted from model context.
+Capability implementations keep native Python exceptions for development. Before results reach a model, `zomah.model_boundary.invoke_model_capability` validates the request and returns a stable `ok/result/error` envelope. Unexpected exception details are redacted from model context. The validation, tracing, invocation, and normalization mechanics live in the interface-neutral `zomah.capability_runtime.invoke_capability`; the model boundary is a thin adapter that supplies the worker as the trace identity.
 
 ## Tracing
 

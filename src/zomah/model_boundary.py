@@ -1,64 +1,35 @@
+"""Model-facing capability boundary.
+
+A thin adapter over ``zomah.capability_runtime``: the calling model worker's
+identity is recorded as the trace identity, and every other mechanic
+(validation, dependency injection, mandatory tracing, invocation, error
+normalization and redaction, result shaping) belongs to the shared runtime.
+
+``CapabilityError``, ``CapabilityEnvelope`` and ``normalize_capability_error``
+are re-exported so existing imports keep working.
+"""
+
 from __future__ import annotations
 
-import os
-import sqlite3
 from collections.abc import Callable, Mapping
-from typing import Any, TypeVar
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, ValidationError, model_validator
-
-from zomah.access import (
-    InvalidDirectoryTarget,
-    InvalidReadTarget,
-    InvalidWriteTarget,
-    PathOutsideScope,
+from zomah.capability_runtime import (
+    CapabilityEnvelope,
+    CapabilityError,
+    RequestModel,
+    ResponseModel,
+    invoke_capability,
+    normalize_capability_error,
 )
-from zomah.capabilities.read_file import UnsupportedTextFile
-from zomah.capabilities.write_file import UnsupportedWriteContent
-from zomah.execution import (
-    InvalidScriptArguments,
-    ScriptIntegrityError,
-    ScriptRegistryError,
-    UnknownScript,
-)
-from zomah.knowledge import KnowledgeIndexError, KnowledgeIndexUnavailable
-from zomah.state import ProjectNotFound, RevisionConflict, StateError
-from zomah.tracing import TraceError, TraceOutcome, TraceStore
+from zomah.tracing import TraceStore
 
-
-RequestModel = TypeVar("RequestModel", bound=BaseModel)
-ResponseModel = TypeVar("ResponseModel", bound=BaseModel)
-
-
-class CapabilityError(BaseModel):
-    """Small stable error shape intended for model-facing tool results."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    code: str
-    message: str
-    retryable: bool
-    details: dict[str, Any] | None = None
-
-
-class CapabilityEnvelope(BaseModel):
-    """Normalized success/error envelope returned at the model boundary."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    ok: bool
-    result: dict[str, Any] | None = None
-    error: CapabilityError | None = None
-
-    @model_validator(mode="after")
-    def require_exactly_one_payload(self) -> "CapabilityEnvelope":
-        if self.ok:
-            if self.result is None or self.error is not None:
-                raise ValueError("successful capability envelopes require result only")
-        else:
-            if self.result is not None or self.error is None:
-                raise ValueError("failed capability envelopes require error only")
-        return self
+__all__ = [
+    "CapabilityEnvelope",
+    "CapabilityError",
+    "invoke_model_capability",
+    "normalize_capability_error",
+]
 
 
 def invoke_model_capability(
@@ -83,282 +54,11 @@ def invoke_model_capability(
     from the model payload by this adapter.
     """
 
-    capability_name = getattr(capability, "__name__", capability.__class__.__name__)
-
-    try:
-        request = request_type.model_validate(dict(payload))
-    except ValidationError as exc:
-        error = _validation_error(exc)
-        return _trace_rejected_request(
-            trace_store,
-            worker=worker,
-            capability=capability_name,
-            error=error,
-        )
-
-    try:
-        run_id = trace_store.start_run(
-            worker=worker,
-            capability=capability_name,
-            target=_trace_target(request),
-        )
-    except TraceError as exc:
-        return _failure(normalize_capability_error(exc))
-
-    try:
-        response = capability(request, **dependencies)
-    except Exception as exc:  # noqa: BLE001 - boundary intentionally contains failures.
-        error = normalize_capability_error(exc)
-        _safe_finish_trace(
-            trace_store,
-            run_id,
-            outcome=TraceOutcome.FAILED,
-            error_code=error.code,
-        )
-        return _failure(error)
-
-    if not isinstance(response, BaseModel):
-        error = CapabilityError(
-            code="internal_error",
-            message="Capability returned an unsupported response type.",
-            retryable=False,
-        )
-        _safe_finish_trace(
-            trace_store,
-            run_id,
-            outcome=TraceOutcome.FAILED,
-            error_code=error.code,
-        )
-        return _failure(error)
-
-    _safe_finish_trace(
-        trace_store,
-        run_id,
-        outcome=TraceOutcome.SUCCEEDED,
+    return invoke_capability(
+        request_type,
+        capability,
+        payload,
+        trace_identity=worker,
+        trace_store=trace_store,
+        **dependencies,
     )
-    return CapabilityEnvelope(
-        ok=True,
-        result=response.model_dump(mode="json"),
-        error=None,
-    )
-
-
-def normalize_capability_error(exc: Exception) -> CapabilityError:
-    """Translate a known internal exception into a stable model-facing error.
-
-    The mapping is intentionally explicit. Unexpected exceptions are redacted
-    rather than exposing Python internals to the model. A later trace layer can
-    retain developer-facing exception details separately.
-    """
-
-    if isinstance(exc, PathOutsideScope):
-        return _error("path_outside_scope", str(exc), retryable=False)
-    if isinstance(exc, InvalidReadTarget):
-        return _error("invalid_read_target", str(exc), retryable=False)
-    if isinstance(exc, InvalidDirectoryTarget):
-        return _error("invalid_directory_target", str(exc), retryable=False)
-    if isinstance(exc, InvalidWriteTarget):
-        return _error("invalid_write_target", str(exc), retryable=False)
-
-    if isinstance(exc, UnsupportedTextFile):
-        return _error("unsupported_text_file", str(exc), retryable=False)
-    if isinstance(exc, UnsupportedWriteContent):
-        return _error("unsupported_write_content", str(exc), retryable=False)
-
-    if isinstance(exc, ProjectNotFound):
-        return _error(
-            "project_not_found",
-            f"Project was not found: {exc}",
-            retryable=False,
-        )
-    if isinstance(exc, RevisionConflict):
-        return _error(
-            "revision_conflict",
-            str(exc),
-            retryable=True,
-            details={"recovery": "read current project state and retry with its revision"},
-        )
-    if isinstance(exc, StateError):
-        return _error("state_error", str(exc), retryable=False)
-
-    if isinstance(exc, UnknownScript):
-        return _error("unknown_script", str(exc), retryable=False)
-    if isinstance(exc, InvalidScriptArguments):
-        return _error("invalid_script_arguments", str(exc), retryable=False)
-    if isinstance(exc, ScriptIntegrityError):
-        return _error(
-            "script_integrity_error",
-            str(exc),
-            retryable=False,
-            details={"recovery": "script must be explicitly reviewed and re-registered"},
-        )
-    if isinstance(exc, ScriptRegistryError):
-        return _error("script_registry_error", str(exc), retryable=False)
-
-    if isinstance(exc, TraceError):
-        return _error(
-            "trace_unavailable",
-            "Mandatory local tracing is unavailable; capability execution was blocked.",
-            retryable=True,
-        )
-
-    if isinstance(exc, KnowledgeIndexUnavailable):
-        return _error("knowledge_index_unavailable", str(exc), retryable=False)
-    if isinstance(exc, KnowledgeIndexError):
-        return _error("knowledge_index_error", str(exc), retryable=True)
-
-    if isinstance(exc, sqlite3.OperationalError):
-        return _error(
-            "storage_unavailable",
-            "Local SQLite storage is temporarily unavailable.",
-            retryable=True,
-        )
-    if isinstance(exc, FileNotFoundError):
-        return _error("resource_not_found", str(exc), retryable=False)
-    if isinstance(exc, PermissionError):
-        return _error("permission_denied", str(exc), retryable=False)
-    if isinstance(exc, OSError):
-        return _error(
-            "filesystem_error",
-            _safe_os_error_message(exc),
-            retryable=True,
-        )
-    if isinstance(exc, ValueError):
-        return _error("invalid_request", str(exc), retryable=False)
-
-    return CapabilityError(
-        code="internal_error",
-        message="Capability failed unexpectedly.",
-        retryable=False,
-    )
-
-
-def _validation_error(exc: ValidationError) -> CapabilityError:
-    issues: list[dict[str, str]] = []
-    for item in exc.errors(include_input=False, include_url=False):
-        location = ".".join(str(part) for part in item["loc"]) or "request"
-        issues.append(
-            {
-                "field": location,
-                "type": str(item["type"]),
-                "message": str(item["msg"]),
-            }
-        )
-
-    return CapabilityError(
-        code="invalid_request",
-        message="Capability request failed validation.",
-        retryable=False,
-        details={"issues": issues},
-    )
-
-
-def _safe_os_error_message(exc: OSError) -> str:
-    if exc.errno is not None:
-        return os.strerror(exc.errno)
-    return "Filesystem operation failed."
-
-
-def _error(
-    code: str,
-    message: str,
-    *,
-    retryable: bool,
-    details: dict[str, Any] | None = None,
-) -> CapabilityError:
-    return CapabilityError(
-        code=code,
-        message=message,
-        retryable=retryable,
-        details=details,
-    )
-
-
-def _failure(error: CapabilityError) -> CapabilityEnvelope:
-    return CapabilityEnvelope(ok=False, result=None, error=error)
-
-def _trace_rejected_request(
-    trace_store: TraceStore,
-    *,
-    worker: str,
-    capability: str,
-    error: CapabilityError,
-) -> CapabilityEnvelope:
-    """Trace a rejected request without retaining its raw model payload."""
-
-    try:
-        run_id = trace_store.start_run(
-            worker=worker,
-            capability=capability,
-            target=None,
-        )
-    except TraceError as exc:
-        return _failure(normalize_capability_error(exc))
-
-    _safe_finish_trace(
-        trace_store,
-        run_id,
-        outcome=TraceOutcome.FAILED,
-        error_code=error.code,
-    )
-    return _failure(error)
-
-
-def _safe_finish_trace(
-    trace_store: TraceStore,
-    run_id: str,
-    *,
-    outcome: TraceOutcome,
-    error_code: str | None = None,
-) -> None:
-    """Best-effort finalization after a mandatory trace row already exists.
-
-    If finalization fails, the durable `started` row remains visible as an
-    incomplete trace. We intentionally do not turn an already-completed
-    state-changing capability into a reported failure that could invite an
-    unsafe retry.
-    """
-
-    try:
-        trace_store.finish_run(
-            run_id,
-            outcome=outcome,
-            error_code=error_code,
-        )
-    except TraceError:
-        return
-
-
-def _trace_target(request: BaseModel) -> str | None:
-    """Return a compact non-content target/reference for local tracing."""
-
-    data = request.model_dump()
-
-    project_id = data.get("project_id")
-    if isinstance(project_id, str):
-        return f"project:{project_id}"
-
-    script = data.get("script")
-    if isinstance(script, str):
-        return f"script:{script}"
-
-    source = data.get("source")
-    destination = data.get("destination")
-    if isinstance(source, str) and isinstance(destination, str):
-        return f"{source} -> {destination}"
-
-    path = data.get("path")
-    if isinstance(path, str):
-        return path
-
-    domain = data.get("domain")
-    if domain is not None:
-        domain_value = getattr(domain, "value", domain)
-        if isinstance(domain_value, str):
-            return f"system:{domain_value}"
-
-    if "query" in data:
-        # Search terms can contain sensitive text. Record only the operation.
-        return "knowledge-search"
-
-    return None

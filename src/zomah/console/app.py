@@ -106,7 +106,8 @@ class Composer(TextArea):
         text = self.text
         if not text.strip():
             return
-        self.clear()
+        # load_text clears edit history: a sent draft is not undoable.
+        self.load_text("")
         self.post_message(self.Submitted(self, text))
 
 

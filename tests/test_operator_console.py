@@ -92,6 +92,25 @@ def test_enter_submits_to_transcript_and_composer_stays_usable() -> None:
     run_console(scenario)
 
 
+def test_submission_starts_fresh_edit_history() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        await pilot.press(*"sent", "enter")
+        await pilot.pause()
+        assert transcript_entries(app) == ["operator\nsent"]
+        assert composer.text == ""
+
+        await pilot.press("ctrl+z")
+        assert composer.text == ""
+        await pilot.press("ctrl+y")
+        assert composer.text == ""
+
+        await pilot.press(*"next", "ctrl+z")
+        assert composer.text == ""
+
+    run_console(scenario)
+
+
 def test_shift_enter_inserts_newline_without_submitting() -> None:
     async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
         composer = app.query_one(Composer)

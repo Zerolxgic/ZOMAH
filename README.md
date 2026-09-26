@@ -80,6 +80,8 @@ tests/test_run_script.py             execution-boundary tests
 src/zomah/model_boundary.py          model request/error/trace adapter
 src/zomah/tracing.py                 minimal local capability trace store
 tests/test_tracing.py                automatic tracing boundary tests
+src/zomah/console/app.py             Operator Console shell (Textual)
+tests/test_operator_console.py       console layout and composer tests
 ```
 
 ## First local run
@@ -91,6 +93,14 @@ python examples/bootstrap_state.py
 ```
 
 This initializes the canonical SQLite database at `$XDG_DATA_HOME/zomah/zomah.db` or `~/.local/share/zomah/zomah.db`, creates the initial ZOMAH `ProjectState` if it does not already exist, and writes a generated Markdown mirror beside the database under `exports/`.
+
+## Operator Console (T0a shell)
+
+```bash
+zomah-console          # or: python -m zomah.console
+```
+
+The console currently provides the header, transcript, and multiline composer only. Header fields without a live runtime source show explicit placeholders, and submitted text is echoed to the transcript without invoking any model or capability. Enter submits, Shift+Enter inserts a newline (requires a terminal that supports the kitty keyboard protocol), Ctrl+A selects all, and Ctrl+Q quits.
 
 ## Knowledge retrieval
 

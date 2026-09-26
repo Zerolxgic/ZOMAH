@@ -79,6 +79,10 @@ tests/test_move_file.py            file-move boundary tests
 tests/test_run_script.py             execution-boundary tests
 src/zomah/capability_runtime.py      interface-neutral validate/trace/invoke/normalize core
 src/zomah/model_boundary.py          model-facing adapter over the capability runtime
+src/zomah/user_boundary.py           human operator adapter over the capability runtime
+src/zomah/console/operator.py        operator identity + injected capability dependencies
+tests/test_user_boundary.py          operator boundary tests
+tests/test_console_project.py        /project capability read path tests
 tests/test_capability_runtime.py     shared invocation contract tests
 src/zomah/tracing.py                 minimal local capability trace store
 tests/test_tracing.py                automatic tracing boundary tests
@@ -105,14 +109,19 @@ This initializes the canonical SQLite database at `$XDG_DATA_HOME/zomah/zomah.db
 ## Operator Console (T0a shell)
 
 ```bash
-zomah-console          # or: python -m zomah.console
+zomah-console                                  # or: python -m zomah.console
+zomah-console --project zomah --operator zerrius
 ```
 
 The console currently provides the header, transcript, and multiline composer only. Header fields without a live runtime source show explicit placeholders, and submitted text is echoed to the transcript without invoking any model or capability. Enter submits, Shift+Enter inserts a newline (requires a terminal that supports the kitty keyboard protocol; Ctrl+J is the compatibility fallback), Ctrl+A selects all, and Ctrl+Q quits.
 
 Typing `/` lists the registered console commands (`/help`, `/project`, `/status`, `/tools`) alphabetically, filtered by prefix. Up/Down move the highlight, Enter completes the highlighted command into the composer, and Esc dismisses the list. The console command registry (`src/zomah/console/commands.py`) is separate from the capability registry and grants no machine authority.
 
-Any submission starting with `/` is routed as a command (`src/zomah/console/routing.py`); unknown commands and unsupported arguments return an error result and never fall through as ordinary input. The built-in views (`src/zomah/console/builtin_commands.py`) render only from supplied state and registry metadata: `/help` lists commands and composer keys, `/status` and `/project` show the supplied `ConsoleStatus`, and `/tools` shows `CapabilityRegistry` metadata. Registry agent exposure is not live model availability, and no capability handler is invoked.
+Any submission starting with `/` is routed as a command (`src/zomah/console/routing.py`); unknown commands and unsupported arguments return an error result and never fall through as ordinary input. The built-in views live in `src/zomah/console/builtin_commands.py`: `/help` lists commands and composer keys, `/status` shows the supplied `ConsoleStatus`, and `/tools` shows `CapabilityRegistry` metadata (registry agent exposure is not live model availability). `/project` reads canonical ProjectState for the configured `--project` id through the human capability boundary; without `--project` it reports that no active canonical project is configured and invokes nothing.
+
+## Operator capability boundary
+
+`zomah.user_boundary.invoke_registered_user_capability` is the human front door to registered capabilities, separate from the model-facing `invoke_registered_model_capability`. It rejects unknown and non-`user_exposed` capabilities before anything runs (`agent_exposed` is irrelevant to it), then calls the shared `invoke_capability` runtime with the registered request model and handler. Calls are traced as `operator:<operator_id>` in the existing trace `worker` column. The console builds its trace store and ProjectState repository once at startup (`OperatorAccess`) and runs capability-backed commands off the UI event loop.
 
 ## Knowledge retrieval
 

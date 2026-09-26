@@ -188,11 +188,12 @@ def test_status_preserves_placeholders() -> None:
     ]
 
 
-def test_project_view_shows_supplied_project_or_none() -> None:
-    assert project_view(context(), "").lines == ("No active project is set.",)
-    assert project_view(context(ConsoleStatus(project="~/work/zomah")), "").lines == (
-        "Active project/folder: ~/work/zomah",
-    )
+def test_project_view_without_active_project_id_ignores_header_project() -> None:
+    # ConsoleStatus.project is display text, never a canonical ProjectState id.
+    for status in (ConsoleStatus(), ConsoleStatus(project="zomah")):
+        result = project_view(context(status), "")
+        assert result.lines == ("No active canonical project is configured.",)
+        assert result.is_error is False
 
 
 def test_tools_reads_registry_metadata_without_invoking_handlers() -> None:

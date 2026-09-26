@@ -537,15 +537,16 @@ def test_status_command_reads_current_app_status() -> None:
     run_console(scenario)
 
 
-def test_project_command_reports_supplied_or_missing_project() -> None:
+def test_project_command_without_active_project_id_reports_none_configured() -> None:
     async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
         await submit(pilot, "/project")
-        assert result_entries(app) == ["zomah · Project\nNo active project is set."]
-        app.set_status(ConsoleStatus(project="zomah"))
-        await submit(pilot, "/project")
-        assert result_entries(app)[1] == "zomah · Project\nActive project/folder: zomah"
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert result_entries(app) == [
+            "zomah · Project\nNo active canonical project is configured."
+        ]
 
-    run_console(scenario)
+    run_console(scenario, status=ConsoleStatus(project="zomah"))
 
 
 def test_tools_command_without_session_keeps_header_count_unavailable() -> None:
@@ -603,10 +604,8 @@ def test_command_output_renders_literally() -> None:
 
 def test_status_values_render_literally() -> None:
     async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
-        await submit(pilot, "/project")
-        assert result_entries(app) == [
-            "zomah · Project\nActive project/folder: [b]p[/b]"
-        ]
+        await submit(pilot, "/status")
+        assert "Project:  [b]p[/b]" in result_entries(app)[0]
 
     run_console(scenario, status=ConsoleStatus(project="[b]p[/b]"))
 

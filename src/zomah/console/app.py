@@ -11,6 +11,9 @@ no capability handler is invoked.
 
 from __future__ import annotations
 
+import argparse
+import asyncio
+import getpass
 from collections.abc import Sequence
 from typing import Any
 
@@ -33,6 +36,7 @@ from zomah.console.commands import (
 from zomah.capability_registry import CapabilityRegistry, default_capability_registry
 from zomah.console.builtin_commands import default_command_registry
 from zomah.console.commands import CommandContext, CommandResult
+from zomah.console.operator import OperatorAccess, build_default_operator_access
 from zomah.console.routing import CommandSubmission, parse_submission, run_command
 from zomah.console.status import STATUS_LABELS, ConsoleStatus, status_values
 
@@ -263,12 +267,18 @@ class OperatorConsole(App[None]):
         status: ConsoleStatus | None = None,
         commands: CommandRegistry | None = None,
         capabilities: CapabilityRegistry | None = None,
+        *,
+        active_project_id: str | None = None,
+        operator_access: OperatorAccess | None = None,
     ) -> None:
         super().__init__()
         self._status = status or ConsoleStatus()
         self._commands = commands or default_command_registry()
-        # Read for /tools metadata only; the console never invokes handlers.
+        # Capabilities are invoked only through the user boundary, using the
+        # injected operator access; /tools reads registry metadata only.
         self._capabilities = capabilities or default_capability_registry()
+        self._active_project_id = active_project_id
+        self._operator_access = operator_access
 
     @property
     def status(self) -> ConsoleStatus:
@@ -334,19 +344,33 @@ class OperatorConsole(App[None]):
             )
         ]
         routed = parse_submission(message.text, self._commands)
+        pending: Static | None = None
         if isinstance(routed, CommandSubmission):
-            result = run_command(
-                routed,
-                CommandContext(
-                    status=self._status,
-                    commands=self._commands,
-                    capabilities=self._capabilities,
-                ),
-            )
-            entries.append(self._result_entry(result))
+            if routed.command is not None and routed.command.background:
+                pending = Static(
+                    Text.assemble(("zomah · ", "bold"), (routed.name, "bold"), " running…"),
+                    classes="entry result pending",
+                )
+                entries.append(pending)
+            else:
+                entries.append(self._result_entry(run_command(routed, self._command_context())))
         transcript = self.query_one("#transcript", VerticalScroll)
         await transcript.mount_all(entries)
         transcript.scroll_end(animate=False)
+        if pending is not None and isinstance(routed, CommandSubmission):
+            self.run_worker(
+                self._run_in_background(routed, self._command_context(), pending),
+                group="commands",
+            )
+
+    def _command_context(self) -> CommandContext:
+        return CommandContext(
+            status=self._status,
+            commands=self._commands,
+            capabilities=self._capabilities,
+            active_project_id=self._active_project_id,
+            operator_access=self._operator_access,
+        )
 
     @staticmethod
     def _result_entry(result: CommandResult) -> Static:
@@ -361,6 +385,37 @@ class OperatorConsole(App[None]):
             classes="entry result error" if result.is_error else "entry result",
         )
 
+    async def _run_in_background(
+        self, routed: CommandSubmission, context: CommandContext, pending: Static
+    ) -> None:
+        """Run an I/O-bound command in a thread and fill in its pending entry."""
 
-def main() -> None:
-    OperatorConsole().run()
+        try:
+            result = await asyncio.to_thread(run_command, routed, context)
+        except Exception:  # noqa: BLE001 - a view bug must not crash the console.
+            self.log.error(f"console command failed: {routed.name}")
+            result = CommandResult(
+                title=f"{routed.name} failed unexpectedly.", is_error=True
+            )
+        entry = self._result_entry(result)
+        pending.update(entry.content)
+        pending.set_classes(entry.classes)
+        self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(prog="zomah-console")
+    parser.add_argument(
+        "--project",
+        dest="project_id",
+        help="canonical ProjectState id for /project (default: none configured)",
+    )
+    parser.add_argument(
+        "--operator",
+        default=getpass.getuser(),
+        help="operator id recorded as operator:<id> in traces (default: OS user)",
+    )
+    args = parser.parse_args(argv)
+    OperatorConsole(
+        active_project_id=args.project_id,
+        operator_access=build_default_operator_access(args.operator),
+    ).run()

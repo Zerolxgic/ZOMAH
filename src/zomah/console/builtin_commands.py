@@ -1,7 +1,8 @@
 """Built-in Operator Console views: /help, /project, /status, /tools.
 
-Each view renders only from its ``CommandContext``. None of them invokes a
-capability handler, queries ProjectState, or reaches a model.
+Each view renders only from its ``CommandContext``. ``/project`` reads
+canonical ProjectState through the user capability boundary; the other views
+render supplied state and registry metadata. No view reaches a model.
 """
 
 from __future__ import annotations
@@ -12,7 +13,10 @@ from zomah.console.commands import (
     CommandResult,
     ConsoleCommand,
 )
+from zomah.capabilities import GetProjectStateResponse
+from zomah.capability_runtime import CapabilityError
 from zomah.console.status import STATUS_LABELS, status_values
+from zomah.user_boundary import invoke_registered_user_capability
 
 COMPOSER_CONTROLS: tuple[tuple[str, str], ...] = (
     ("Enter", "submit"),
@@ -59,10 +63,71 @@ def status_view(context: CommandContext, arguments: str) -> CommandResult:
 
 
 def project_view(context: CommandContext, arguments: str) -> CommandResult:
-    project = context.status.project
-    if project is None:
-        return CommandResult(title="Project", lines=("No active project is set.",))
-    return CommandResult(title="Project", lines=(f"Active project/folder: {project}",))
+    project_id = context.active_project_id
+    if project_id is None:
+        return CommandResult(
+            title="Project",
+            lines=("No active canonical project is configured.",),
+        )
+    access = context.operator_access
+    if access is None:
+        return CommandResult(
+            title="Project unavailable",
+            lines=("This console was started without capability access.",),
+            is_error=True,
+        )
+    envelope = invoke_registered_user_capability(
+        context.capabilities,
+        "get_project_state",
+        {"project_id": project_id},
+        operator_id=access.operator_id,
+        trace_store=access.trace_store,
+        repository=access.project_repository,
+    )
+    # The envelope carries exactly one of error / result.
+    if envelope.error is not None:
+        return _capability_error_result(envelope.error)
+    return _project_result(GetProjectStateResponse.model_validate(envelope.result))
+
+
+def _capability_error_result(error: CapabilityError) -> CommandResult:
+    lines = [error.message, f"Code: {error.code}"]
+    if error.retryable:
+        lines.append("This may succeed if retried.")
+    return CommandResult(title="Project unavailable", lines=tuple(lines), is_error=True)
+
+
+def _project_result(response: GetProjectStateResponse) -> CommandResult:
+    project = response.project
+    window = project.decision_window
+    counts = ", ".join(
+        f"{count} {status.value}" for status, count in window.by_status.items() if count
+    )
+    decisions = f"{window.total} total" + (f" ({counts})" if counts else "")
+    lines = [
+        f"{project.name} ({project.id})",
+        *_columns(
+            [
+                ("Status:", project.status.value),
+                ("Phase:", project.phase),
+                ("Revision:", str(project.revision)),
+                ("Summary:", project.summary),
+                ("Focus:", project.current_focus),
+                ("Last action:", project.last_action or "none recorded"),
+                ("Next action:", project.next_action or "none recorded"),
+                ("Blockers:", str(len(project.blockers))),
+                ("Open questions:", str(len(project.open_questions))),
+                ("Decisions:", decisions),
+                ("Updated:", f"{project.updated_at.isoformat()} by {project.updated_by}"),
+            ]
+        ),
+    ]
+    if window.truncated:
+        lines.append(
+            f"Decision history is truncated: this view received {window.returned} of "
+            f"{window.total} decisions. Canonical history is complete in storage."
+        )
+    return CommandResult(title="Project", lines=tuple(lines))
 
 
 def _yes_no(value: bool) -> str:
@@ -107,7 +172,12 @@ def default_command_registry() -> CommandRegistry:
     registry = CommandRegistry()
     for command in (
         ConsoleCommand("/help", "Show available commands and composer keys.", help_view),
-        ConsoleCommand("/project", "Show the active project/folder, if one is set.", project_view),
+        ConsoleCommand(
+            "/project",
+            "Show canonical state for the active project.",
+            project_view,
+            background=True,
+        ),
         ConsoleCommand("/status", "Show ZOMAH and session status.", status_view),
         ConsoleCommand("/tools", "Show registered capabilities and model tool availability.", tools_view),
     ):

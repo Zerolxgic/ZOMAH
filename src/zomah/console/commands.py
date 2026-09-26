@@ -3,7 +3,9 @@
 Console commands describe what the operator can type as ``/name``. This is an
 interface registry, separate from ``CapabilityRegistry``: a command's handler
 renders a console view from the ``CommandContext`` it is given, and
-registering a command grants no machine authority.
+registering a command grants no machine authority. A command that needs a
+capability goes through the user boundary with the operator access it is
+given, like any other operator call.
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from zomah.capability_registry import CapabilityRegistry
+from zomah.console.operator import OperatorAccess
 from zomah.console.status import ConsoleStatus
 
 
@@ -26,11 +29,18 @@ class CommandResult:
 
 @dataclass(frozen=True, slots=True)
 class CommandContext:
-    """Read-only inputs a console command may render from."""
+    """Inputs a console command may render from.
+
+    ``active_project_id`` identifies canonical ProjectState and is distinct
+    from ``status.project``, which is header display text. ``operator_access``
+    is ``None`` when the console was started without capability access.
+    """
 
     status: ConsoleStatus
     commands: CommandRegistry
     capabilities: CapabilityRegistry
+    active_project_id: str | None = None
+    operator_access: OperatorAccess | None = None
 
 
 CommandHandler = Callable[[CommandContext, str], CommandResult]
@@ -42,13 +52,15 @@ class ConsoleCommand:
 
     ``handler`` receives the context and the argument text (empty when none
     was given). Arguments are rejected before the handler runs unless
-    ``accepts_arguments`` is set.
+    ``accepts_arguments`` is set. ``background`` handlers perform I/O and are
+    run off the UI event loop; the others run inline.
     """
 
     name: str
     description: str
     handler: CommandHandler | None = None
     accepts_arguments: bool = False
+    background: bool = False
 
     def __post_init__(self) -> None:
         if (

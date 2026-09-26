@@ -4,14 +4,14 @@ The console is an interface into ZOMAH, not a source of ZOMAH state. The
 header renders a ``ConsoleStatus`` supplied by its caller; any field that has
 no live runtime source yet is rendered as an explicit placeholder rather than
 an invented value. Submitted composer text is only echoed into the transcript:
-no model, capability, or command is invoked from this shell. Slash commands
-are offered for discovery and completion only.
+no model is invoked. Submitted slash commands are routed to console views
+(``builtin_commands``) that render from supplied state and registry metadata;
+no capability handler is invoked.
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
 from typing import Any
 
 from rich.text import Text
@@ -28,53 +28,13 @@ from zomah import __version__
 from zomah.console.commands import (
     CommandRegistry,
     ConsoleCommand,
-    default_command_registry,
     is_command_prefix,
 )
-
-PLACEHOLDER_NOT_SET = "not set"
-PLACEHOLDER_NOT_CONNECTED = "not connected"
-PLACEHOLDER_UNAVAILABLE = "unavailable"
-
-
-@dataclass(frozen=True, slots=True)
-class ConsoleStatus:
-    """Header view data. ``None`` means no live source exists for the field."""
-
-    project: str | None = None
-    zomah_state: str | None = None
-    model: str | None = None
-    tools_available: int | None = None
-    context_used: int | None = None
-    context_limit: int | None = None
-
-
-def _header_values(status: ConsoleStatus) -> dict[str, str]:
-    if status.context_used is None or status.context_limit is None:
-        context = PLACEHOLDER_UNAVAILABLE
-    else:
-        context = f"{status.context_used} / {status.context_limit}"
-    return {
-        "project": status.project or PLACEHOLDER_NOT_SET,
-        "state": status.zomah_state or PLACEHOLDER_NOT_CONNECTED,
-        "model": status.model or PLACEHOLDER_NOT_CONNECTED,
-        "tools": (
-            PLACEHOLDER_UNAVAILABLE
-            if status.tools_available is None
-            else str(status.tools_available)
-        ),
-        "context": context,
-    }
-
-
-_HEADER_LABELS = {
-    "project": "Project",
-    "state": "State",
-    "model": "Model",
-    "tools": "Tools",
-    "context": "Context",
-}
-
+from zomah.capability_registry import CapabilityRegistry, default_capability_registry
+from zomah.console.builtin_commands import default_command_registry
+from zomah.console.commands import CommandContext, CommandResult
+from zomah.console.routing import CommandSubmission, parse_submission, run_command
+from zomah.console.status import STATUS_LABELS, ConsoleStatus, status_values
 
 class CommandSuggestions(OptionList):
     """Slash-command discovery list. Never focused; the composer drives it."""
@@ -275,6 +235,13 @@ class OperatorConsole(App[None]):
     .entry {
         margin-bottom: 1;
     }
+    .result {
+        border-left: outer $accent;
+        padding-left: 1;
+    }
+    .result.error {
+        border-left: outer $error;
+    }
     #suggestions {
         height: auto;
         max-height: 100%;
@@ -295,17 +262,20 @@ class OperatorConsole(App[None]):
         self,
         status: ConsoleStatus | None = None,
         commands: CommandRegistry | None = None,
+        capabilities: CapabilityRegistry | None = None,
     ) -> None:
         super().__init__()
         self._status = status or ConsoleStatus()
         self._commands = commands or default_command_registry()
+        # Read for /tools metadata only; the console never invokes handlers.
+        self._capabilities = capabilities or default_capability_registry()
 
     @property
     def status(self) -> ConsoleStatus:
         return self._status
 
     def compose(self) -> ComposeResult:
-        values = _header_values(self._status)
+        values = status_values(self._status)
         with Vertical(id="header"):
             yield Static(f"ZOMAH {__version__}", id="header-identity")
             for left, right in (("project", "state"), ("model", "tools"), ("context", None)):
@@ -321,7 +291,7 @@ class OperatorConsole(App[None]):
         with Vertical(id="work"):
             yield VerticalScroll(
                 Static(
-                    "No model connected. Submitted text is shown here only.",
+                    "No model connected. Messages are shown here only; type / for commands.",
                     classes="entry notice",
                 ),
                 id="transcript",
@@ -338,7 +308,7 @@ class OperatorConsole(App[None]):
     @staticmethod
     def _field(name: str, value: str, classes: str = "") -> Static:
         return Static(
-            Text.assemble((f"{_HEADER_LABELS[name]}: ", "dim"), value),
+            Text.assemble((f"{STATUS_LABELS[name]}: ", "dim"), value),
             id=f"field-{name}",
             classes=classes,
         )
@@ -347,23 +317,49 @@ class OperatorConsole(App[None]):
         """Re-render the header from caller-supplied status."""
 
         self._status = status
-        for name, value in _header_values(status).items():
+        for name, value in status_values(status).items():
             self.query_one(f"#field-{name}", Static).update(
-                Text.assemble((f"{_HEADER_LABELS[name]}: ", "dim"), value)
+                Text.assemble((f"{STATUS_LABELS[name]}: ", "dim"), value)
             )
 
     def on_mount(self) -> None:
         self.query_one(Composer).focus()
 
     async def on_composer_submitted(self, message: Composer.Submitted) -> None:
+        # Text (not markup) so operator input and command output render literally.
+        entries = [
+            Static(
+                Text.assemble(("operator\n", "bold"), message.text),
+                classes="entry operator",
+            )
+        ]
+        routed = parse_submission(message.text, self._commands)
+        if isinstance(routed, CommandSubmission):
+            result = run_command(
+                routed,
+                CommandContext(
+                    status=self._status,
+                    commands=self._commands,
+                    capabilities=self._capabilities,
+                ),
+            )
+            entries.append(self._result_entry(result))
         transcript = self.query_one("#transcript", VerticalScroll)
-        # Text (not markup) so operator input is rendered literally.
-        entry = Static(
-            Text.assemble(("operator\n", "bold"), message.text),
-            classes="entry operator",
-        )
-        await transcript.mount(entry)
+        await transcript.mount_all(entries)
         transcript.scroll_end(animate=False)
+
+    @staticmethod
+    def _result_entry(result: CommandResult) -> Static:
+        body = "\n".join(result.lines)
+        return Static(
+            Text.assemble(
+                ("zomah · ", "bold"),
+                (result.title, "bold"),
+                "\n" if body else "",
+                body,
+            ),
+            classes="entry result error" if result.is_error else "entry result",
+        )
 
 
 def main() -> None:

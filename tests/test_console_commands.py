@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import pytest
 
+from zomah.console.builtin_commands import default_command_registry
 from zomah.console.commands import (
     CommandRegistry,
     ConsoleCommand,
     DuplicateCommandError,
-    default_command_registry,
     is_command_prefix,
 )
 

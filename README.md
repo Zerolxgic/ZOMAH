@@ -82,7 +82,11 @@ src/zomah/tracing.py                 minimal local capability trace store
 tests/test_tracing.py                automatic tracing boundary tests
 src/zomah/console/app.py             Operator Console shell (Textual)
 src/zomah/console/commands.py        console slash-command registry
+src/zomah/console/routing.py         submission → message/command routing
+src/zomah/console/builtin_commands.py built-in /help /project /status /tools views
+src/zomah/console/status.py          ConsoleStatus view data
 tests/test_console_commands.py       command registry tests
+tests/test_console_routing.py        routing and built-in view tests
 tests/test_operator_console.py       console layout and composer tests
 ```
 
@@ -104,7 +108,9 @@ zomah-console          # or: python -m zomah.console
 
 The console currently provides the header, transcript, and multiline composer only. Header fields without a live runtime source show explicit placeholders, and submitted text is echoed to the transcript without invoking any model or capability. Enter submits, Shift+Enter inserts a newline (requires a terminal that supports the kitty keyboard protocol; Ctrl+J is the compatibility fallback), Ctrl+A selects all, and Ctrl+Q quits.
 
-Typing `/` lists the registered console commands (`/help`, `/project`, `/status`, `/tools`) alphabetically, filtered by prefix. Up/Down move the highlight, Enter completes the highlighted command into the composer, and Esc dismisses the list. Commands are discovered and completed only; none executes yet. The console command registry (`src/zomah/console/commands.py`) is separate from the capability registry.
+Typing `/` lists the registered console commands (`/help`, `/project`, `/status`, `/tools`) alphabetically, filtered by prefix. Up/Down move the highlight, Enter completes the highlighted command into the composer, and Esc dismisses the list. The console command registry (`src/zomah/console/commands.py`) is separate from the capability registry and grants no machine authority.
+
+Any submission starting with `/` is routed as a command (`src/zomah/console/routing.py`); unknown commands and unsupported arguments return an error result and never fall through as ordinary input. The built-in views (`src/zomah/console/builtin_commands.py`) render only from supplied state and registry metadata: `/help` lists commands and composer keys, `/status` and `/project` show the supplied `ConsoleStatus`, and `/tools` shows `CapabilityRegistry` metadata. Registry agent exposure is not live model availability, and no capability handler is invoked.
 
 ## Knowledge retrieval
 

@@ -1,22 +1,54 @@
 """Operator Console command registry.
 
 Console commands describe what the operator can type as ``/name``. This is an
-interface registry, separate from ``CapabilityRegistry``: a command may later
-invoke a registered capability, but registering a command grants no authority
-and executes nothing.
+interface registry, separate from ``CapabilityRegistry``: a command's handler
+renders a console view from the ``CommandContext`` it is given, and
+registering a command grants no machine authority.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
+
+from zomah.capability_registry import CapabilityRegistry
+from zomah.console.status import ConsoleStatus
+
+
+@dataclass(frozen=True, slots=True)
+class CommandResult:
+    """Structured console output for one command, rendered as plain text."""
+
+    title: str
+    lines: tuple[str, ...] = ()
+    is_error: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class CommandContext:
+    """Read-only inputs a console command may render from."""
+
+    status: ConsoleStatus
+    commands: CommandRegistry
+    capabilities: CapabilityRegistry
+
+
+CommandHandler = Callable[[CommandContext, str], CommandResult]
 
 
 @dataclass(frozen=True, slots=True)
 class ConsoleCommand:
-    """One slash command offered by the Operator Console."""
+    """One slash command offered by the Operator Console.
+
+    ``handler`` receives the context and the argument text (empty when none
+    was given). Arguments are rejected before the handler runs unless
+    ``accepts_arguments`` is set.
+    """
 
     name: str
     description: str
+    handler: CommandHandler | None = None
+    accepts_arguments: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -52,6 +84,9 @@ class CommandRegistry:
             raise DuplicateCommandError(f"command already registered: {command.name}")
         self._commands[command.name] = command
 
+    def get(self, name: str) -> ConsoleCommand | None:
+        return self._commands.get(name)
+
     def all(self) -> tuple[ConsoleCommand, ...]:
         return tuple(sorted(self._commands.values(), key=lambda command: command.name))
 
@@ -59,20 +94,3 @@ class CommandRegistry:
         """Commands whose name starts with ``prefix``, alphabetically."""
 
         return tuple(command for command in self.all() if command.name.startswith(prefix))
-
-
-def default_command_registry() -> CommandRegistry:
-    """Build the explicit initial console command set.
-
-    T0b registers these for discovery only; none of them executes yet.
-    """
-
-    registry = CommandRegistry()
-    for command in (
-        ConsoleCommand("/help", "Show available commands and composer keys."),
-        ConsoleCommand("/project", "Show or select the active project."),
-        ConsoleCommand("/status", "Show ZOMAH and session status."),
-        ConsoleCommand("/tools", "List tools available to the active model."),
-    ):
-        registry.register(command)
-    return registry

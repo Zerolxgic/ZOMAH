@@ -7,10 +7,12 @@ from textual import events
 from textual.pilot import Pilot
 from textual.widgets import Static
 
+from zomah.capability_registry import CapabilityRegistry
 from zomah.console import (
     CommandRegistry,
     CommandSuggestions,
     Composer,
+    CommandResult,
     ConsoleCommand,
     ConsoleStatus,
     OperatorConsole,
@@ -25,9 +27,10 @@ def run_console(
     size: tuple[int, int] = (80, 24),
     status: ConsoleStatus | None = None,
     commands: CommandRegistry | None = None,
+    capabilities: CapabilityRegistry | None = None,
 ) -> None:
     async def runner() -> None:
-        app = OperatorConsole(status, commands)
+        app = OperatorConsole(status, commands, capabilities)
         async with app.run_test(size=size) as pilot:
             await scenario(app, pilot)
 
@@ -475,3 +478,148 @@ def test_highlighted_suggestion_scrolls_into_view_when_list_is_clipped() -> None
         assert suggestions.scroll_y + visible_rows >= 4
 
     run_console(scenario, size=(40, 12))
+
+
+def result_entries(app: OperatorConsole) -> list[str]:
+    return [str(entry.content) for entry in app.query(".entry.result").results(Static)]
+
+
+def all_entries(app: OperatorConsole) -> list[tuple[str, str]]:
+    entries = []
+    for entry in app.query("#transcript .entry").results(Static):
+        kind = "operator" if entry.has_class("operator") else (
+            "result" if entry.has_class("result") else "notice"
+        )
+        entries.append((kind, str(entry.content).split("\n")[0]))
+    return entries
+
+
+async def submit(pilot: Pilot, text: str) -> None:
+    pilot.app.query_one(Composer).load_text(text)
+    await pilot.press("escape", "enter")
+    await pilot.pause()
+
+
+def test_ordinary_text_produces_no_command_result() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "hello there")
+        assert transcript_entries(app) == ["operator\nhello there"]
+        assert result_entries(app) == []
+
+    run_console(scenario)
+
+
+def test_command_renders_operator_history_then_distinct_result() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "/help")
+        assert all_entries(app) == [
+            ("notice", "No model connected. Messages are shown here only; type / for commands."),
+            ("operator", "operator"),
+            ("result", "zomah · Help"),
+        ]
+        help_text = result_entries(app)[0]
+        for name in ("/help", "/project", "/status", "/tools"):
+            assert name in help_text
+        assert "Ctrl+J" in help_text and "newline fallback" in help_text
+
+    run_console(scenario)
+
+
+def test_status_command_reads_current_app_status() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "/status")
+        assert "Model:    not connected" in result_entries(app)[0]
+        app.set_status(ConsoleStatus(model="local-model"))
+        await submit(pilot, "/status")
+        assert "Model:    local-model" in result_entries(app)[1]
+        assert field_text(app, "tools") == "Tools: unavailable"
+
+    run_console(scenario)
+
+
+def test_project_command_reports_supplied_or_missing_project() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "/project")
+        assert result_entries(app) == ["zomah · Project\nNo active project is set."]
+        app.set_status(ConsoleStatus(project="zomah"))
+        await submit(pilot, "/project")
+        assert result_entries(app)[1] == "zomah · Project\nActive project/folder: zomah"
+
+    run_console(scenario)
+
+
+def test_tools_command_without_session_keeps_header_count_unavailable() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "/tools")
+        output = result_entries(app)[0]
+        assert "get_project_state" in output
+        assert "No model session" in output
+        assert field_text(app, "tools") == "Tools: unavailable"
+
+    run_console(scenario)
+
+
+def test_unknown_command_is_an_error_not_ordinary_input() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "/whatever")
+        assert result_entries(app) == [
+            "zomah · Unknown command: /whatever\n"
+            "Type / to browse commands, or use /help."
+        ]
+        assert app.query_one(".entry.result").has_class("error")
+
+    run_console(scenario)
+
+
+def test_unsupported_arguments_produce_usage_error() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "/status now")
+        assert result_entries(app) == [
+            "zomah · /status does not take arguments.\nUsage: /status"
+        ]
+        assert app.query_one(".entry.result").has_class("error")
+
+    run_console(scenario)
+
+
+def test_command_output_renders_literally() -> None:
+    registry = CommandRegistry()
+    registry.register(
+        ConsoleCommand(
+            "/probe",
+            "[bold]markup[/bold] description",
+            lambda ctx, args: CommandResult("[red]title[/red]", ("[link=x]line[/link]",)),
+        )
+    )
+
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "/probe")
+        assert result_entries(app) == [
+            "zomah · [red]title[/red]\n[link=x]line[/link]"
+        ]
+
+    run_console(scenario, commands=registry)
+
+
+def test_status_values_render_literally() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await submit(pilot, "/project")
+        assert result_entries(app) == [
+            "zomah · Project\nActive project/folder: [b]p[/b]"
+        ]
+
+    run_console(scenario, status=ConsoleStatus(project="[b]p[/b]"))
+
+
+def test_completed_command_submits_and_routes() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        await pilot.press("slash", "s")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        await pilot.press("enter")
+        await pilot.pause()
+        assert transcript_entries(app) == ["operator\n/status"]
+        assert result_entries(app)[0].startswith("zomah · Status")
+
+    run_console(scenario)

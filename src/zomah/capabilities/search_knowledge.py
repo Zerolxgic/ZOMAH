@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 from zomah.knowledge import KnowledgeIndex
 
@@ -17,16 +17,29 @@ MAX_RESULTS = 50
 
 
 class KnowledgeResult(BaseModel):
-    """One ranked document-level retrieval result."""
+    """One ranked document, located at its strongest matching lines.
+
+    ``excerpt`` is taken from lines ``start_line``..``end_line`` of the file,
+    numbered like ``read_file``. To inspect the evidence, call ``read_file``
+    with this ``path`` and ``start_line``; reading from line 1 is unnecessary.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     rank: int = Field(ge=1)
     path: str
     title: str
+    start_line: int = Field(ge=1)
+    end_line: int = Field(ge=1)
     excerpt: str
     relevance: float
     size_bytes: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def check_line_range(self) -> "KnowledgeResult":
+        if self.end_line < self.start_line:
+            raise ValueError("end_line must not precede start_line")
+        return self
 
 
 class SearchKnowledgeRequest(BaseModel):
@@ -68,13 +81,15 @@ def search_knowledge(
     results = [
         KnowledgeResult(
             rank=rank,
-            path=row["path"],
-            title=row["title"],
-            excerpt=row["excerpt"],
-            relevance=row["relevance"],
-            size_bytes=row["size_bytes"],
+            path=hit.path,
+            title=hit.title,
+            start_line=hit.start_line,
+            end_line=hit.end_line,
+            excerpt=hit.excerpt,
+            relevance=hit.relevance,
+            size_bytes=hit.size_bytes,
         )
-        for rank, row in enumerate(rows, start=1)
+        for rank, hit in enumerate(rows, start=1)
     ]
 
     return SearchKnowledgeResponse(

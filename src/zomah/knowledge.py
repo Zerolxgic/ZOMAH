@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import sqlite3
+import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -15,6 +16,12 @@ DEFAULT_IGNORED_DIRECTORIES = frozenset(
     {".git", ".venv", "__pycache__", ".pytest_cache"}
 )
 MAX_INDEX_FILE_BYTES = 2 * 1024 * 1024
+
+# Localization: lines considered together when scoring a region, and the
+# largest excerpt returned for one result (characters, excluding ellipses).
+LOCALIZE_WINDOW_LINES = 3
+MAX_EXCERPT_CHARS = 160
+_EXCERPT_LEAD_CHARS = 40
 
 
 class KnowledgeIndexError(RuntimeError):
@@ -32,6 +39,30 @@ class KnowledgeRefreshReport:
     unchanged_files: int
     removed_files: int
     skipped_files: int
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeHit:
+    """One ranked document plus its strongest lexically matching region.
+
+    ``excerpt`` is cut from exactly lines ``start_line``..``end_line`` (1-based,
+    numbered like ``read_file``) of the indexed document text.
+    """
+
+    path: str
+    title: str
+    size_bytes: int
+    relevance: float
+    start_line: int
+    end_line: int
+    excerpt: str
+
+
+@dataclass(frozen=True, slots=True)
+class LocalizedRegion:
+    start_line: int
+    end_line: int
+    excerpt: str
 
 
 def default_knowledge_db_path() -> Path:
@@ -157,19 +188,24 @@ class KnowledgeIndex:
             skipped_files=skipped,
         )
 
-    def search(self, query: str, *, limit: int) -> list[sqlite3.Row]:
+    def search(self, query: str, *, limit: int) -> list[KnowledgeHit]:
+        """Rank documents with FTS5/BM25, then localize the match in each one.
+
+        Ranking and order come only from FTS5. Localization runs on the stored
+        document text (current as of the last refresh) and never reorders.
+        """
+
         fts_query = _fts_query(query)
 
         with self.connect() as conn:
-            return list(
+            rows = list(
                 conn.execute(
                     """
                     SELECT
                         d.path,
                         d.title,
-                        d.modified_ns,
                         d.size_bytes,
-                        snippet(knowledge_fts, 2, '', '', ' … ', 24) AS excerpt,
+                        knowledge_fts.body AS body,
                         -bm25(knowledge_fts, 0.0, 5.0, 1.0) AS relevance
                     FROM knowledge_fts
                     JOIN knowledge_documents AS d ON d.path = knowledge_fts.path
@@ -180,6 +216,22 @@ class KnowledgeIndex:
                     (fts_query, limit),
                 )
             )
+
+        hits: list[KnowledgeHit] = []
+        for row in rows:
+            region = localize(row["body"], query)
+            hits.append(
+                KnowledgeHit(
+                    path=row["path"],
+                    title=row["title"],
+                    size_bytes=row["size_bytes"],
+                    relevance=row["relevance"],
+                    start_line=region.start_line,
+                    end_line=region.end_line,
+                    excerpt=region.excerpt,
+                )
+            )
+        return hits
 
     def _initialize(self) -> None:
         try:
@@ -279,8 +331,97 @@ def _document_title(path: Path, text: str) -> str:
     return path.stem
 
 
+_QUERY_TOKEN = re.compile(r"[^\W_]+(?:[-_.][^\W_]+)*", flags=re.UNICODE)
+_WORD = re.compile(r"[^\W_]+", flags=re.UNICODE)
+
+
+def _normalize_word(word: str) -> str:
+    """Case- and diacritic-insensitive form, mirroring FTS5 unicode61."""
+
+    decomposed = unicodedata.normalize("NFKD", word.casefold())
+    return "".join(char for char in decomposed if not unicodedata.combining(char))
+
+
+def _query_phrases(query: str) -> tuple[tuple[str, ...], ...]:
+    """The FTS query terms as word sequences (``tool-result`` → tool, result)."""
+
+    phrases: list[tuple[str, ...]] = []
+    for token in _QUERY_TOKEN.findall(query):
+        words = tuple(_normalize_word(word) for word in _WORD.findall(token))
+        if words and words not in phrases:
+            phrases.append(words)
+    return tuple(phrases)
+
+
+def _line_matches(line: str, phrases: tuple[tuple[str, ...], ...]) -> list[tuple[int, int]]:
+    """(phrase index, character offset) for every query phrase in one line."""
+
+    words = [(_normalize_word(m.group()), m.start()) for m in _WORD.finditer(line)]
+    normalized = [word for word, _ in words]
+    matches: list[tuple[int, int]] = []
+    for position, (word, offset) in enumerate(words):
+        for index, phrase in enumerate(phrases):
+            if phrase[0] == word and tuple(normalized[position : position + len(phrase)]) == phrase:
+                matches.append((index, offset))
+    return matches
+
+
+def localize(body: str, query: str) -> LocalizedRegion:
+    """Find the strongest lexical region of ``body`` for ``query``.
+
+    Lines are split on ``\n`` only, matching ``read_file``'s numbering (both
+    read text with universal newlines). Every window of
+    ``LOCALIZE_WINDOW_LINES`` lines is scored by distinct query terms, then
+    total term occurrences; ties go to the earliest window. The chosen window
+    is trimmed to its first and last matching lines, and the excerpt is cut
+    from that region (centred on the first match when the region is longer
+    than ``MAX_EXCERPT_CHARS``). The reported range is the lines the excerpt
+    actually covers. Terms spanning a line break are not matched. Without any
+    body match (e.g. a title-only hit) the first non-blank line is returned.
+    """
+
+    lines = body.split("\n")
+    phrases = _query_phrases(query)
+    matches = [_line_matches(line, phrases) for line in lines]
+
+    best: tuple[tuple[int, int, int], int] | None = None
+    for start in range(len(lines)):
+        window = [m for line_matches in matches[start : start + LOCALIZE_WINDOW_LINES] for m in line_matches]
+        if not window:
+            continue
+        key = (-len({index for index, _ in window}), -len(window), start)
+        if best is None or key < best[0]:
+            best = (key, start)
+
+    if best is None:
+        first = last = next((i for i, line in enumerate(lines) if line.strip()), 0)
+        anchor = 0
+    else:
+        start = best[1]
+        matched = [i for i in range(start, min(start + LOCALIZE_WINDOW_LINES, len(lines))) if matches[i]]
+        first, last = matched[0], matched[-1]
+        anchor = min(offset for _, offset in matches[first])
+
+    region = "\n".join(lines[first : last + 1])
+    if len(region) <= MAX_EXCERPT_CHARS:
+        cut_start, cut_end = 0, len(region)
+    else:
+        cut_start = max(0, anchor - _EXCERPT_LEAD_CHARS)
+        cut_end = min(len(region), cut_start + MAX_EXCERPT_CHARS)
+        cut_start = max(0, cut_end - MAX_EXCERPT_CHARS)
+
+    start_line = first + region.count("\n", 0, cut_start) + 1
+    end_line = first + region.count("\n", 0, max(cut_start, cut_end - 1)) + 1
+    excerpt = (
+        ("…" if cut_start > 0 else "")
+        + region[cut_start:cut_end]
+        + ("…" if cut_end < len(region) else "")
+    )
+    return LocalizedRegion(start_line=start_line, end_line=end_line, excerpt=excerpt)
+
+
 def _fts_query(query: str) -> str:
-    tokens = re.findall(r"[^\W_]+(?:[-_.][^\W_]+)*", query, flags=re.UNICODE)
+    tokens = _QUERY_TOKEN.findall(query)
     if not tokens:
         raise ValueError("query must contain at least one searchable term")
 

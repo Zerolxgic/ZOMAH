@@ -175,8 +175,11 @@ def default_capability_registry() -> CapabilityRegistry:
         CapabilityDefinition(
             id="search_knowledge",
             description=(
-                "Search indexed UTF-8 knowledge files inside configured read roots "
-                "and return ranked references and excerpts."
+                "Search indexed UTF-8 knowledge files inside configured read roots. "
+                "Returns ranked documents, each with the line range (start_line, "
+                "end_line) and a short excerpt of its strongest match. To see more, "
+                "call read_file with that path and start_line; reading from line 1 "
+                "is unnecessary."
             ),
             authority=CapabilityAuthority.READ,
             lifecycle=CapabilityLifecycle.VERIFIED,

@@ -97,6 +97,7 @@ tests/test_worker_session_tools.py   WorkerSession tool-loop tests
 tests/test_read_file_tool.py         read_file tool + dependency routing tests
 tests/test_worker_session_budget.py  per-turn tool-result budget tests
 tests/test_search_knowledge_tool.py  search_knowledge tool + shared scope tests
+tests/test_search_localization.py    grounded line-range localization tests
 src/zomah/console/clipboard.py       wl-paste clipboard image source
 tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
 tests/test_console_attachments.py    composer attachment behavior tests
@@ -191,6 +192,10 @@ zomah-console --project zomah --model qwen/qwen3.5-9b --context-limit 16384 \
 ```
 
 `search_knowledge` is registered (READ, VERIFIED, user and agent exposed, dependency `index`) and becomes the third session tool only with `--enable-knowledge-search`, which requires `--model` and at least one `--read-root` (`Tools: 3`). The console builds one `KnowledgeIndex` at startup at `default_knowledge_db_path()` over the same `ReadScope` instance `read_file` uses, so every search result is a path `read_file` is allowed to open. The index still refreshes incrementally before every search and still covers only `.md`/`.txt`/`.rst` files, skipping symlinks, tooling directories, non-UTF-8 files, and files over 2 MiB. Search returns ranked references with short excerpts; the model decides whether to `read_file` a result, and ZOMAH never reads on its own. Search results count toward the per-turn tool-result budget like any other tool result. Traces record `elyria | search_knowledge | <outcome> | knowledge-search`, never the query or excerpts.
+
+### Localized search results (T2f)
+
+Each `search_knowledge` result now carries `start_line`/`end_line` and an excerpt cut from exactly those lines, so the model can call `read_file(path, start_line=...)` at the evidence instead of reading from line 1. FTS5/BM25 still selects and orders documents; a deterministic second stage then localizes the strongest region inside each ranked document using the same query terms (case-, punctuation-, and diacritic-insensitive; hyphenated terms as phrases). It scores every 3-line window by distinct terms, then occurrences, then earliest line, trims the window to its matching lines, and cuts an excerpt of at most 160 characters centred on the first match. Lines are numbered exactly like `read_file` (split on `\n` after universal-newline translation), from the indexed text as refreshed before the search. ZOMAH still never reads a result on its own. Known edge: the index accepts lines longer than `read_file` returns (16,384 characters), so a hint that points at such a line is found but not readable at that line.
 
 ## Operator capability boundary
 

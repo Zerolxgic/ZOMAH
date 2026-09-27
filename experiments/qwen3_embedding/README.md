@@ -17,6 +17,7 @@ prepare_cases.py          T3d step 1: freeze judge cases (ZOMAH environment)
 run_jev_judge.py          T3d step 2a: Jev on the frozen cases (typesafe-sdk environment)
 run_laya_judge.py         T3d step 2b: Laya on the frozen cases (laya environment)
 compare_judges.py         T3d step 3: score and compare the judges (standard library only)
+run_localization.py       T3e: lexical vs semantic within-document localization (embedding environment)
 requirements-jev.txt      T3d Jev judge dependency (verified version)
 requirements-laya.txt     T3d Laya judge dependency (verified version)
 T3A-LIVE-RESULTS.md       summary of the first real-machine T3a run
@@ -40,6 +41,10 @@ embedding_bench/
   judge_runner.py         T3d: shared runner command flow
   judge_compare.py        T3d: metrics, baselines, pairwise and agreement diagnostics
   judge_report.py         T3d Markdown report + terminal summary
+  passages.py             T3e: 3-line windows, bounded excerpts, semantic passage ranking
+  evidence.py             T3e: anchor spans and post-localization coverage scoring
+  localization_runner.py  T3e: label-free localization, then evaluation, timings, candidate packs
+  localization_report.py  T3e Markdown report + terminal summary
 tests/                    pure-logic tests (no torch, no model download)
 ```
 
@@ -182,3 +187,25 @@ Neither the cases file nor a judgments file is replaced without `--overwrite`. E
 **Report.** On the ambiguous cases, for each judge: accuracy, abstentions, accuracy when selecting, protocol failures, latency, results by category and by whether the answer was lexical #1, semantic #1 or neither, and the cases it wins or loses against RRF. Baselines (lexical #1, semantic #1, RRF #1, T3c order, first option) are recomputed from the frozen cases. Also: pairwise judge agreement, agreement-case diagnostics (does the judge ever overturn a correct agreement, or fix the wrong one), and evidence-pack limits: whether the expected document's excerpt actually covers the benchmark evidence, and Laya's truncation.
 
 **Known evidence-pack limit.** The excerpt comes from lexical localization, so for reworded queries it often lands on the wrong lines of the right document. `prepare_cases.py` prints how many ambiguous cases show the evidence in the expected candidate's excerpt, and the report separates those cases from judgment failures.
+
+## T3e: semantic within-document evidence localization
+
+T3e asks whether Qwen3-Embedding can find the evidence *inside* a document where the lexical `localize()` cannot. Each benchmark query is localized in its benchmark document (an evaluation setup that separates localization from retrieval; production would not know that document), by both the unchanged `zomah.knowledge.localize()` and a semantic localizer. Nothing here changes production localization.
+
+```bash
+experiments/qwen3_embedding/.venv/bin/python experiments/qwen3_embedding/run_localization.py \
+  --t3a-results ~/.local/share/zomah/experiments/qwen3-embedding/run-1/results.json \
+  --output-dir ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3e
+```
+
+It writes `results.json`, `report.md` and, with `--t3a-results`, `candidate_packs.json`, and prints a summary. `--fake-embedder` checks the pipeline without the model.
+
+**Semantic localizer.** Every contiguous 3-line window of the document (stride 1, lines split on newline and numbered like `read_file`; windows without a letter or digit are skipped) is embedded as-is with the T3a embedder unchanged (CPU, float32, 1024 dimensions, normalized). The query is embedded once with the T3a instruction. The window with the highest cosine similarity is selected; ties go to the earliest start line. Windows are embedded once per document and reused across queries; per-document embedding time is reported as the cost of localizing in a document not seen before.
+
+**Excerpts.** From each localizer's selected passage, the same rule cuts 80-, 120- and 160-character excerpts: the passage's leading characters, backing up to whitespace rather than splitting a word when that keeps half the budget. The lexical localizer's own production excerpt (≤160 characters, centred on its first match) is reported separately.
+
+**Evaluation, after localization.** Localizers receive only the query and the document; the benchmark anchor, category and labels are read afterwards. Coverage is measured by source position: selected lines overlapping the anchor's lines, the passage holding the whole anchor, and, per excerpt budget, whether the evidence survives (the excerpt holds the whole anchor, or the anchor is longer and the excerpt is entirely anchor text), plus the share of the anchor shown. Results are reported overall and by category, with lexical-vs-semantic case buckets, every disagreement with both selections, and the semantic top-3 windows per case with the rank of the first window that reaches the evidence.
+
+**Drift guards.** Cases whose anchor is gone are reported and not scored. With `--t3a-results` the corpus must still match T3a. The recomputed lexical coverage must match the recorded baseline (line overlap: exact 7/7, paraphrase 0/10, conceptual 0/5, distractor 3/8); otherwise the run stops before loading the model.
+
+**Candidate-pack simulation.** With `--t3a-results`, the semantic localizer is also applied to every document in each case's T3c candidate union, producing one passage per candidate in `candidate_packs.json`. It is not scored and is sent to no judge.

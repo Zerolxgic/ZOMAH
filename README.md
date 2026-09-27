@@ -84,6 +84,10 @@ src/zomah/console/operator.py        operator identity + injected capability dep
 tests/test_user_boundary.py          operator boundary tests
 tests/test_console_project.py        /project capability read path tests
 tests/test_console_session.py        console session-state ownership tests
+src/zomah/console/attachments.py     in-memory ImageAttachment + limits
+src/zomah/console/clipboard.py       wl-paste clipboard image source
+tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
+tests/test_console_attachments.py    composer attachment behavior tests
 tests/test_capability_runtime.py     shared invocation contract tests
 src/zomah/tracing.py                 minimal local capability trace store
 tests/test_tracing.py                automatic tracing boundary tests
@@ -121,6 +125,10 @@ Typing `/` lists the registered console commands (`/help`, `/project`, `/status`
 Any submission starting with `/` is routed as a command (`src/zomah/console/routing.py`); unknown commands and unsupported arguments return an error result and never fall through as ordinary input. The built-in views live in `src/zomah/console/builtin_commands.py`: `/help` lists commands and composer keys, `/status` shows the supplied `ConsoleStatus`, and `/tools` shows `CapabilityRegistry` metadata (registry agent exposure is not live model availability). `/project` reads canonical ProjectState for the configured `--project` id through the human capability boundary; without `--project` it reports that no active canonical project is configured and invokes nothing.
 
 `ConsoleStatus` (`src/zomah/console/status.py`) is the single owner of transient console session state: the active canonical project id, the human-facing project label, ZOMAH state, model, live tool count, and context usage. The header and `/status` both render it, and `/project` takes its project id from it. `--project` sets only the id, so the header shows `zomah (not read yet)` until a successful `/project` read labels it from canonical state (`ZOMAH (zomah)`). Session updates are applied on the UI loop through `OperatorConsole.set_status`; it is not canonical ProjectState.
+
+### Clipboard images
+
+Ctrl+Shift+V attaches the clipboard image (PNG, JPEG, or WebP) to the composer draft. In Ghostty (1.3+, GTK) the default performable `ctrl+shift+v=paste_from_clipboard` binding pastes text as usual and passes the key through to the console only when the clipboard holds no text, so text paste is unchanged. Images are read from the Wayland clipboard with `wl-paste` (wl-clipboard), off the UI loop, with fixed arguments, a 5 s timeout, and a 10 MiB per-image limit; a draft holds at most 4 images. Attached images appear in a strip above the composer; Backspace in an empty composer removes the most recent one. Images live only in the draft: submission sends them with the text to the transcript as metadata only, and they are never written to disk. No model receives them yet.
 
 ## Operator capability boundary
 

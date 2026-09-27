@@ -27,6 +27,8 @@ COMPOSER_CONTROLS: tuple[tuple[str, str], ...] = (
     ("Ctrl+J", "newline fallback"),
     ("Ctrl+A", "select all"),
     ("Ctrl+C / Ctrl+V", "copy / paste"),
+    ("Ctrl+Shift+V", "attach clipboard image (when the clipboard holds an image)"),
+    ("Backspace", "remove last image when the text is empty"),
     ("Ctrl+Z / Ctrl+Y", "undo / redo"),
     ("Esc", "dismiss suggestions"),
     ("Ctrl+Q", "quit"),

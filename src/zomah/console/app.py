@@ -35,6 +35,12 @@ from zomah.console.commands import (
 )
 from zomah.capability_registry import CapabilityRegistry, default_capability_registry
 from zomah.console.builtin_commands import default_command_registry
+from zomah.console.attachments import MAX_DRAFT_IMAGES, ImageAttachment
+from zomah.console.clipboard import (
+    ClipboardImageError,
+    ClipboardImageSource,
+    WaylandClipboardImageSource,
+)
 from zomah.console.commands import CommandContext, CommandResult
 from zomah.console.operator import OperatorAccess, build_default_operator_access
 from zomah.console.routing import CommandSubmission, parse_submission, run_command
@@ -86,6 +92,18 @@ class CommandSuggestions(OptionList):
         self.clear_options()
 
 
+class AttachmentStrip(Static):
+    """Draft attachment metadata shown above the composer. The composer drives it."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__("", **kwargs)
+        self.display = False
+
+    def show(self, attachments: Sequence[ImageAttachment]) -> None:
+        self.update(Text("   ".join(attachment.describe() for attachment in attachments)))
+        self.display = bool(attachments)
+
+
 class Composer(TextArea):
     """Multiline message editor with slash-command discovery.
 
@@ -99,26 +117,42 @@ class Composer(TextArea):
         Binding("ctrl+a", "select_all", "Select all", show=False),
         Binding("shift+enter,ctrl+j", "newline", "Newline", show=False),
         Binding("escape", "dismiss_suggestions", "Dismiss", show=False),
+        # Reaches the app only when the terminal passes it through; Ghostty
+        # does so when the clipboard holds no text (an image-only clipboard).
+        Binding("ctrl+shift+v", "paste_image", "Paste image", show=False),
     ]
 
     class Submitted(Message):
-        """Posted when the operator submits non-blank composer text."""
+        """Posted when the operator submits non-blank text and/or attachments."""
 
-        def __init__(self, composer: Composer, text: str) -> None:
+        def __init__(
+            self,
+            composer: Composer,
+            text: str,
+            attachments: tuple[ImageAttachment, ...] = (),
+        ) -> None:
             super().__init__()
             self.composer = composer
             self.text = text
+            self.attachments = attachments
+
+    class ImagePasteRequested(Message):
+        """Posted when the operator asks to attach the clipboard image."""
 
     def __init__(
         self,
         *,
         commands: CommandRegistry,
         suggestions: CommandSuggestions,
+        attachment_strip: AttachmentStrip,
         **kwargs: Any,
     ) -> None:
         super().__init__(**kwargs)
         self._commands = commands
         self._suggestions = suggestions
+        self._attachment_strip = attachment_strip
+        # Draft attachments live only here, in memory, until submission.
+        self._attachments: list[ImageAttachment] = []
         # Text for which the operator dismissed suggestions (Esc or completion).
         self._dismissed_text: str | None = None
 
@@ -190,13 +224,39 @@ class Composer(TextArea):
         else:
             super().action_cursor_down(select)
 
+    @property
+    def attachments(self) -> tuple[ImageAttachment, ...]:
+        return tuple(self._attachments)
+
+    def add_attachment(self, attachment: ImageAttachment) -> None:
+        if len(self._attachments) >= MAX_DRAFT_IMAGES:
+            raise ValueError(f"a message can carry at most {MAX_DRAFT_IMAGES} images")
+        self._attachments.append(attachment)
+        self._attachment_strip.show(self._attachments)
+
+    def action_paste_image(self) -> None:
+        self.post_message(self.ImagePasteRequested())
+
+    def action_delete_left(self) -> None:
+        # Backspace in an empty composer removes the most recent attachment;
+        # otherwise it is TextArea's normal deletion.
+        if not self.text and self._attachments:
+            self._attachments.pop()
+            self._attachment_strip.show(self._attachments)
+            return
+        super().action_delete_left()
+
     def submit(self) -> None:
         text = self.text
-        if not text.strip():
+        if not text.strip() and not self._attachments:
             return
+        attachments = tuple(self._attachments)
         # load_text clears edit history: a sent draft is not undoable.
+        # Attachments are never part of that history.
         self.load_text("")
-        self.post_message(self.Submitted(self, text))
+        self._attachments.clear()
+        self._attachment_strip.show(())
+        self.post_message(self.Submitted(self, text, attachments))
 
 
 class OperatorConsole(App[None]):
@@ -255,6 +315,13 @@ class OperatorConsole(App[None]):
         border: round $primary;
         padding: 0 1;
     }
+    #attachments {
+        height: auto;
+        padding: 0 1;
+        color: $accent;
+        text-wrap: nowrap;
+        text-overflow: ellipsis;
+    }
     #composer {
         height: auto;
         min-height: 3;
@@ -269,6 +336,7 @@ class OperatorConsole(App[None]):
         capabilities: CapabilityRegistry | None = None,
         *,
         operator_access: OperatorAccess | None = None,
+        clipboard: ClipboardImageSource | None = None,
     ) -> None:
         super().__init__()
         self._status = status or ConsoleStatus()
@@ -277,6 +345,7 @@ class OperatorConsole(App[None]):
         # injected operator access; /tools reads registry metadata only.
         self._capabilities = capabilities or default_capability_registry()
         self._operator_access = operator_access
+        self._clipboard = clipboard or WaylandClipboardImageSource()
 
     @property
     def status(self) -> ConsoleStatus:
@@ -305,9 +374,12 @@ class OperatorConsole(App[None]):
                 id="transcript",
             )
             yield suggestions
+        attachment_strip = AttachmentStrip(id="attachments")
+        yield attachment_strip
         yield Composer(
             commands=self._commands,
             suggestions=suggestions,
+            attachment_strip=attachment_strip,
             id="composer",
             soft_wrap=True,
             show_line_numbers=False,
@@ -338,15 +410,30 @@ class OperatorConsole(App[None]):
 
     async def on_composer_submitted(self, message: Composer.Submitted) -> None:
         # Text (not markup) so operator input and command output render literally.
+        # Only attachment metadata reaches the transcript; image bytes are
+        # dropped with the message once this handler returns.
+        lines = [message.text] if message.text.strip() else []
+        lines.extend(attachment.describe() for attachment in message.attachments)
+        body = "\n".join(lines)
         entries = [
             Static(
-                Text.assemble(("operator\n", "bold"), message.text),
+                Text.assemble(("operator\n", "bold"), body),
                 classes="entry operator",
             )
         ]
         routed = parse_submission(message.text, self._commands)
         pending: Static | None = None
-        if isinstance(routed, CommandSubmission):
+        if isinstance(routed, CommandSubmission) and message.attachments:
+            entries.append(
+                self._result_entry(
+                    CommandResult(
+                        title=f"{routed.name} does not take image attachments.",
+                        lines=("The attachments were not sent anywhere.",),
+                        is_error=True,
+                    )
+                )
+            )
+        elif isinstance(routed, CommandSubmission):
             if routed.command is not None and routed.command.background:
                 pending = Static(
                     Text.assemble(("zomah · ", "bold"), (routed.name, "bold"), " running…"),
@@ -360,11 +447,46 @@ class OperatorConsole(App[None]):
         transcript = self.query_one("#transcript", VerticalScroll)
         await transcript.mount_all(entries)
         transcript.scroll_end(animate=False)
-        if pending is not None and isinstance(routed, CommandSubmission):
+        if pending is not None and isinstance(routed, CommandSubmission) and not message.attachments:
             self.run_worker(
                 self._run_in_background(routed, self._command_context(), pending),
                 group="commands",
             )
+
+    def on_composer_image_paste_requested(
+        self, message: Composer.ImagePasteRequested
+    ) -> None:
+        composer = self.query_one(Composer)
+        if len(composer.attachments) >= MAX_DRAFT_IMAGES:
+            self.notify(
+                f"A message can carry at most {MAX_DRAFT_IMAGES} images.",
+                severity="warning",
+            )
+            return
+        self.run_worker(self._attach_clipboard_image(), group="clipboard")
+
+    async def _attach_clipboard_image(self) -> None:
+        """Read the clipboard in a thread; apply the result on the UI loop."""
+
+        try:
+            attachment = await asyncio.to_thread(self._clipboard.read_image)
+        except ClipboardImageError as error:
+            self.notify(str(error), severity="warning")
+            return
+        except Exception:  # noqa: BLE001 - never surface exception details.
+            self.log.error("clipboard image read failed")
+            self.notify("Could not read the clipboard image.", severity="warning")
+            return
+        composer = self.query_one(Composer)
+        try:
+            composer.add_attachment(attachment)
+        except ValueError:
+            self.notify(
+                f"A message can carry at most {MAX_DRAFT_IMAGES} images.",
+                severity="warning",
+            )
+            return
+        self.notify(f"Attached {attachment.describe()}")
 
     def _command_context(self) -> CommandContext:
         return CommandContext(

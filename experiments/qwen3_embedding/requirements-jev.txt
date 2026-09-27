@@ -1,0 +1,3 @@
+# T3d Jev judge only; never add to ZOMAH's pyproject.toml. Installed with the `jev`
+# package too. The runner calls the SDK directly because `jev` discards probabilities.
+typesafe-sdk==0.7.2

@@ -1,0 +1,4 @@
+# T3d Laya judge only; never add to ZOMAH's pyproject.toml. Pulls torch/transformers;
+# reuse an existing Laya environment if you have one. The runner's token-budget
+# diagnostics read laya.common internals, so keep this version pinned.
+laya==0.3.20

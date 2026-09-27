@@ -13,6 +13,12 @@ benchmark.json            committed evaluation manifest (30 cases, 4 categories)
 run_benchmark.py          T3a CLI: download, run, write results.json + report.md
 run_fusion.py             T3b CLI: RRF over a T3a results.json (standard library only)
 run_candidate_audit.py    T3c CLI: candidate union + ambiguity audit (standard library only)
+prepare_cases.py          T3d step 1: freeze judge cases (ZOMAH environment)
+run_jev_judge.py          T3d step 2a: Jev on the frozen cases (typesafe-sdk environment)
+run_laya_judge.py         T3d step 2b: Laya on the frozen cases (laya environment)
+compare_judges.py         T3d step 3: score and compare the judges (standard library only)
+requirements-jev.txt      T3d Jev judge dependency (verified version)
+requirements-laya.txt     T3d Laya judge dependency (verified version)
 T3A-LIVE-RESULTS.md       summary of the first real-machine T3a run
 T3B-LIVE-RESULTS.md       summary of the real-machine T3b fusion run
 requirements.txt          experiment-only dependencies (verified versions)
@@ -28,6 +34,12 @@ embedding_bench/
   fusion_report.py        T3b Markdown report + terminal summary
   candidates.py           T3c: candidate union, resolution classes, audit
   candidates_report.py    T3c Markdown report + terminal summary
+  judge_contract.py       T3d: judge input, the one rendered request, answer normalization, run loop
+  judge_prepare.py        T3d: candidate evidence packs from T3a + T3c + lexical localization
+  judge_adapters.py       T3d: Jev (typesafe-sdk) and Laya adapters
+  judge_runner.py         T3d: shared runner command flow
+  judge_compare.py        T3d: metrics, baselines, pairwise and agreement diagnostics
+  judge_report.py         T3d Markdown report + terminal summary
 tests/                    pure-logic tests (no torch, no model download)
 ```
 
@@ -129,3 +141,44 @@ python experiments/qwen3_embedding/run_candidate_audit.py \
 
 **Evaluation** (labels read only here): candidate recall for lexical top 3, semantic top 3 and the union, overall and by category; candidate-set sizes; accuracy of deterministic resolutions; every ambiguous case with its candidates' ranks; and every retrieval failure, meaning the expected document is not a candidate. Retrieval failures are kept separate from ambiguous cases whose answer is a candidate, which are the only scope a bounded judge could address. Lexical #1, semantic #1 and RRF (k = 60) are reported on the ambiguous cases as labelled diagnostics, never as the resolver.
 
+## T3d: Jev vs Laya on bounded retrieval selection
+
+T3d asks whether a bounded judge can pick the right document among the small candidate set T3c builds, on the cases deterministic agreement does not resolve. Jev and Laya are two alternative implementations of that one job. They run independently on identical input and are compared with each other and with deterministic baselines; they are never stacked or combined.
+
+**The job.** Input: one query and the T3c candidates (`union(lexical top 3, semantic top 3)`), each with its path, lexical rank, semantic rank, and an excerpt from the unchanged `zomah.knowledge.localize` (at most 160 characters, with its line range). Output: one candidate, or `none`. Candidates are listed by path, not by retrieval rank, so option position carries no retrieval signal; a "first listed option" baseline measures position bias. The judge never sees the case id, category, expected document, evidence anchor, rationale, T3a/T3c outcomes, or RRF, and it cannot search or read files.
+
+**One request, both judges.** Each case is rendered once into a plain-text state (`Question: …`) and a single choice question whose options are the candidates (evidence first, then path, lines and ranks) plus `none`. Jev's System One API and Laya both accept exactly this question shape, so both receive byte-identical requests, stored in the cases file with a SHA-256 per case. Answers keep each system's own probabilities and confidence; nothing is thresholded. A choice outside the supplied ids, a malformed answer, or an error is a protocol failure.
+
+**Workflow.** Four steps, each in its own environment:
+
+```bash
+# 1. ZOMAH environment: freeze the cases (checks the corpus still matches T3a;
+#    --t3c-results also checks candidate sets and baselines against T3c)
+python experiments/qwen3_embedding/prepare_cases.py \
+  --input ~/.local/share/zomah/experiments/qwen3-embedding/run-1/results.json \
+  --t3c-results ~/.local/share/zomah/experiments/qwen3-embedding/run-1-candidate-audit/results.json \
+  --output ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/cases.json
+
+# 2a. Jev environment (typesafe-sdk; TYPESAFE_API_KEY set)
+python experiments/qwen3_embedding/run_jev_judge.py \
+  --cases ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/cases.json \
+  --output-dir ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/jev
+
+# 2b. Laya environment (laya)
+python experiments/qwen3_embedding/run_laya_judge.py \
+  --cases ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/cases.json \
+  --output-dir ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/laya
+
+# 3. Any Python 3.11+, standard library only
+python experiments/qwen3_embedding/compare_judges.py \
+  --cases ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/cases.json \
+  --jev   ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/jev/judgments.json \
+  --laya  ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/laya/judgments.json \
+  --output-dir ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3d/comparison
+```
+
+Neither the cases file nor a judgments file is replaced without `--overwrite`. Each runner does one warm-up call on a fixed non-benchmark request, then sends every case once; it records the raw provider output, the normalized selection, latency, model load time, and versions. The Jev runner uses `typesafe_sdk` directly (the `jev` decorator package discards probabilities) with the SDK's default model (`jev-latest`) unless `--model` is given. The Laya runner loads `convaiinnovations/laya` with the checkpoint's own token budgets unless `--max-len` / `--head-max-len` are given, and records, using Laya's own tokenizer, how much of each option and of the state it actually read.
+
+**Report.** On the ambiguous cases, for each judge: accuracy, abstentions, accuracy when selecting, protocol failures, latency, results by category and by whether the answer was lexical #1, semantic #1 or neither, and the cases it wins or loses against RRF. Baselines (lexical #1, semantic #1, RRF #1, T3c order, first option) are recomputed from the frozen cases. Also: pairwise judge agreement, agreement-case diagnostics (does the judge ever overturn a correct agreement, or fix the wrong one), and evidence-pack limits: whether the expected document's excerpt actually covers the benchmark evidence, and Laya's truncation.
+
+**Known evidence-pack limit.** The excerpt comes from lexical localization, so for reworded queries it often lands on the wrong lines of the right document. `prepare_cases.py` prints how many ambiguous cases show the evidence in the expected candidate's excerpt, and the report separates those cases from judgment failures.

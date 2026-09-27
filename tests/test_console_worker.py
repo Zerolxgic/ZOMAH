@@ -412,3 +412,137 @@ def test_cli_builds_session_only_when_model_is_given(
     for bad in (["--context-limit", "16384"], ["--model", "m", "--context-limit", "0"]):
         with pytest.raises(SystemExit):
             build_console(["--operator", "zerrius", *bad])
+
+
+class StepRuntime:
+    """Replays outcomes; completions listed in ``hold`` wait for ``release``."""
+
+    def __init__(self, *outcomes: ModelResponse, hold: set[int] = frozenset()) -> None:
+        self.outcomes = list(outcomes)
+        self.requests: list[ModelRequest] = []
+        self.hold = hold
+        self.release = asyncio.Event()
+
+    async def complete(self, request: ModelRequest) -> ModelResponse:
+        index = len(self.requests)
+        self.requests.append(request)
+        if index in self.hold:
+            await self.release.wait()
+        return self.outcomes.pop(0)
+
+
+def tool_stack(tmp_path: Path) -> tuple[Any, Any, Any]:
+    from zomah.console.operator import OperatorAccess
+    from zomah.model_tools import build_session_tools
+    from zomah.state import ProjectState, ProjectStateRepository
+    from zomah.tracing import TraceStore
+
+    repository = ProjectStateRepository(tmp_path / "zomah.db")
+    repository.initialize()
+    repository.create(
+        ProjectState(
+            id="zomah", name="ZOMAH", phase="worker-session", summary="s",
+            current_focus="f", next_action="Expose one tool.", updated_by="zerrius",
+        )
+    )
+    access = OperatorAccess(
+        operator_id="zerrius",
+        trace_store=TraceStore(tmp_path / "trace.db"),
+        project_repository=repository,
+    )
+    registry = default_capability_registry()
+    tools, executor = build_session_tools(
+        registry, worker="elyria", trace_store=access.trace_store, repository=repository
+    )
+    return registry, access, (tools, executor)
+
+
+def test_cli_session_exposes_one_tool_backed_by_the_shared_stores(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path))
+    app = build_console(["--operator", "zerrius", "--model", "qwen/qwen3.5-9b"])
+    session = app._session
+    assert session is not None
+    assert [tool.name for tool in session.tools] == ["get_project_state"]
+    assert app.status.tools_available == 1
+    executor = session._executor
+    assert executor._trace_store is app._operator_access.trace_store
+    assert executor._dependencies == {"repository": app._operator_access.project_repository}
+    assert executor._worker == session.worker == "elyria"
+    assert app._capabilities is executor._registry
+
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        assert header(app)["tools"] == "1"
+
+    async def runner() -> None:
+        async with app.run_test(size=(100, 40)) as pilot:
+            await scenario(app, pilot)
+
+    asyncio.run(runner())
+
+
+def test_console_turn_with_tool_call_keeps_pending_until_final_answer(tmp_path: Path) -> None:
+    from zomah.model_runtime import ToolCall
+    from zomah.tracing import TraceOutcome
+
+    registry, access, (tools, executor) = tool_stack(tmp_path)
+    call = ToolCall(id="call_1", name="get_project_state", arguments={"project_id": "zomah"})
+    runtime = StepRuntime(
+        ModelResponse(message=AssistantMessage("", (call,)), usage=TokenUsage(90, 9)),
+        reply("Phase: worker-session. Next: Expose one tool.", TokenUsage(260, 14)),
+        hold={1},
+    )
+    session = make_session(
+        runtime, context_limit=16384, tools=tools, tool_executor=executor
+    )
+
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        assert header(app)["tools"] == "1"
+        await type_and_submit(pilot, "What phase is zomah in? Use your tool.")
+        while len(runtime.requests) < 2:
+            await asyncio.sleep(0.01)
+        # The tool already ran, but the turn is not finished: still pending.
+        (record,) = access.trace_store.recent()
+        assert (record.worker, record.capability, record.outcome) == (
+            "elyria", "get_project_state", TraceOutcome.SUCCEEDED,
+        )
+        assert entries(app)[-1] == ("assistant", "elyria\nelyria is thinking…")
+        assert header(app)["context"] == "unavailable / 16384"
+
+        runtime.release.set()
+        await settle(pilot)
+        assert entries(app)[-1] == (
+            "assistant", "elyria\nPhase: worker-session. Next: Expose one tool."
+        )
+        assert header(app)["context"] == "274 / 16384"
+        assert [m.role for m in session.history] == ["user", "assistant", "tool", "assistant"]
+
+    run_console(
+        scenario, worker_session=session, capabilities=registry, operator_access=access
+    )
+
+
+def test_slash_commands_run_no_model_capability_and_project_uses_human_boundary(
+    tmp_path: Path,
+) -> None:
+    registry, access, (tools, executor) = tool_stack(tmp_path)
+    runtime = GatedRuntime()
+    session = make_session(runtime, tools=tools, tool_executor=executor)
+
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        for command in ("/help", "/status", "/tools", "/project"):
+            await type_and_submit(pilot, command)
+            await settle(pilot)
+        assert runtime.requests == []
+        assert "ZOMAH (zomah)" in entries(app)[-1][1]
+        (record,) = access.trace_store.recent()
+        assert (record.worker, record.capability) == ("operator:zerrius", "get_project_state")
+
+    run_console(
+        scenario,
+        status=ConsoleStatus(active_project_id="zomah"),
+        worker_session=session,
+        capabilities=registry,
+        operator_access=access,
+    )

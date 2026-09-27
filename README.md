@@ -91,6 +91,9 @@ tests/test_worker_session.py         worker session contract tests (fake runtime
 src/zomah/lmstudio.py                LM Studio ModelRuntime adapter
 tests/test_lmstudio_runtime.py       adapter tests against a local fake HTTP server
 tests/test_console_worker.py         console ↔ WorkerSession wiring tests
+src/zomah/model_tools.py             capability → model tool bridge + executor
+tests/test_model_tools.py            tool exposure policy + executor tests
+tests/test_worker_session_tools.py   WorkerSession tool-loop tests
 src/zomah/console/clipboard.py       wl-paste clipboard image source
 tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
 tests/test_console_attachments.py    composer attachment behavior tests
@@ -155,6 +158,12 @@ zomah-console --model qwen/qwen3.5-9b --context-limit 16384 [--lmstudio-base-url
 ```
 
 With `--model`, the console builds one `WorkerSession` over `LMStudioRuntime` at startup (worker `elyria`, no system prompt yet); without it the console stays disconnected and only echoes messages locally. Ordinary messages (text and image attachments) go to the session; slash commands always stay local and never reach the model. Each turn shows the operator entry, then a pending `<worker> is thinking…` entry that is replaced by the reply or a safe error. One model turn runs at a time: a second ordinary message while a turn is in flight is not sent or queued, and is put back in the composer. The header and `/status` mirror the session's model, configured context limit, runtime-reported context usage (`unavailable` until reported), and session tool count (`0`). The session owns model history; the transcript is only UI history, and failed turns never enter model history.
+
+## Model tool calls (T1d)
+
+A live console session exposes exactly one model-visible tool, `get_project_state`. Exposure is an explicit allowlist (`zomah.model_tools.DEFAULT_SESSION_TOOL_IDS`); each id must be registered, `agent_exposed`, `VERIFIED`, and `READ`, or session construction fails. Registry exposure alone never makes a capability visible to a session. The tool's parameters are the capability request model's own JSON schema.
+
+The model decides whether to call the tool; nothing forces or infers tool use. `WorkerSession` advertises its tools, and when the model answers with native tool calls it runs each advertised call (in order, one at a time) through an injected executor, appends the results, and asks the model again until it gives a final answer. Calls to tools outside the session snapshot are answered with a `tool_not_available` result and never executed. The ZOMAH executor invokes through `invoke_registered_model_capability` with worker `elyria`, so validation, the registry exposure check, and mandatory tracing apply unchanged; the resulting `CapabilityEnvelope` (success or normalized error) is returned to the model as compact JSON. Loops are bounded (4 tool rounds, 4 calls per response, 8 per turn). The turn (user message, tool calls, tool results, final answer) is committed to session history only when the final answer arrives; a failure commits nothing, though a READ tool that already ran stays traced. Context usage comes from the final completion. LM Studio receives the native OpenAI-compatible `tools` field and `tool`/`tool_calls` history.
 
 ## Operator capability boundary
 

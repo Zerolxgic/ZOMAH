@@ -174,7 +174,9 @@ def tools_view(context: CommandContext, arguments: str) -> CommandResult:
     elif status.tools_available is None:
         session = f"Model {status.model}: tool availability not reported by the session."
     else:
-        session = f"Model {status.model}: {status.tools_available} tools available this session."
+        count = status.tools_available
+        noun = "tool" if count == 1 else "tools"
+        session = f"Model {status.model}: {count} {noun} available this session."
     return CommandResult(
         title="Tools",
         lines=(

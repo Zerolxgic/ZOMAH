@@ -5,14 +5,18 @@ inference and any provider protocol details, including how images are encoded
 for the wire. ZOMAH hands it an ordered conversation and receives one
 assistant reply plus whatever token usage the runtime reports.
 
-Only system, user, and assistant messages exist here; tool calls and tool
-results are deliberately absent until they are needed.
+Tool calling is native: a request may advertise ``ToolDefinition``s, an
+assistant message may carry ``ToolCall``s, and ``ToolResultMessage``s answer
+them by call id. These types say nothing about what a tool does or who may
+run it; that belongs to whoever executes the calls.
 """
 
 from __future__ import annotations
 
+import copy
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from zomah.attachments import ImageAttachment
 
@@ -42,13 +46,73 @@ class UserMessage:
             raise ValueError("a user message needs text or at least one attachment")
 
 
+def _require_name(value: str, what: str) -> None:
+    if not value or value != value.strip() or any(c.isspace() for c in value):
+        raise ValueError(f"{what} must be non-empty without whitespace")
+
+
+@dataclass(frozen=True, slots=True)
+class ToolDefinition:
+    """A tool the model may call: name, description, JSON-schema parameters."""
+
+    name: str
+    description: str
+    parameters: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        _require_name(self.name, "tool name")
+        if not self.description.strip():
+            raise ValueError("tool description must be non-empty")
+        if not isinstance(self.parameters, Mapping):
+            raise TypeError("tool parameters must be a JSON-schema object")
+        object.__setattr__(self, "parameters", copy.deepcopy(dict(self.parameters)))
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    """One tool call requested by the model, with parsed JSON-object arguments."""
+
+    id: str
+    name: str
+    arguments: Mapping[str, Any]
+
+    def __post_init__(self) -> None:
+        if not self.id.strip():
+            raise ValueError("tool call id must be non-empty")
+        if not self.name.strip():
+            raise ValueError("tool call name must be non-empty")
+        if not isinstance(self.arguments, Mapping):
+            raise TypeError("tool call arguments must be a JSON object")
+        object.__setattr__(self, "arguments", copy.deepcopy(dict(self.arguments)))
+
+
 @dataclass(frozen=True, slots=True)
 class AssistantMessage:
+    """Assistant text, and any tool calls the model made instead of answering."""
+
     text: str
+    tool_calls: tuple[ToolCall, ...] = ()
     role: Literal["assistant"] = field(default="assistant", init=False)
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.tool_calls, tuple):
+            raise TypeError("tool_calls must be a tuple")
 
-ConversationMessage = SystemMessage | UserMessage | AssistantMessage
+
+@dataclass(frozen=True, slots=True)
+class ToolResultMessage:
+    """The result of one tool call, associated by the provider's call id."""
+
+    call_id: str
+    content: str
+    role: Literal["tool"] = field(default="tool", init=False)
+
+    def __post_init__(self) -> None:
+        if not self.call_id.strip():
+            raise ValueError("tool result call id must be non-empty")
+
+
+ConversationMessage = SystemMessage | UserMessage | AssistantMessage | ToolResultMessage
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,21 +138,29 @@ class TokenUsage:
 
 @dataclass(frozen=True, slots=True)
 class ModelRequest:
-    """One completion request: the model to use and the ordered conversation."""
+    """One completion request: model, ordered conversation, advertised tools."""
 
     model: str
     messages: tuple[ConversationMessage, ...]
+    tools: tuple[ToolDefinition, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.model.strip():
             raise ValueError("model identity must be non-empty")
         if not self.messages:
             raise ValueError("a request needs at least one message")
+        names = [tool.name for tool in self.tools]
+        if len(names) != len(set(names)):
+            raise ValueError("tool names must be unique")
 
 
 @dataclass(frozen=True, slots=True)
 class ModelResponse:
-    """The assistant reply and any runtime-reported usage (``None`` if absent)."""
+    """The assistant message and any runtime-reported usage (``None`` if absent).
+
+    If ``message.tool_calls`` is non-empty the model is asking for tools to be
+    run rather than giving a final answer.
+    """
 
     message: AssistantMessage
     usage: TokenUsage | None = None

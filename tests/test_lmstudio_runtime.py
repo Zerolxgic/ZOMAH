@@ -27,6 +27,9 @@ from zomah.model_runtime import (
     ModelRuntimeError,
     SystemMessage,
     TokenUsage,
+    ToolCall,
+    ToolDefinition,
+    ToolResultMessage,
     UserMessage,
 )
 from zomah.worker_session import WorkerSession
@@ -305,19 +308,125 @@ def test_missing_assistant_text_is_rejected(server: FakeLMStudio, content: Any) 
     assert_safe(raised.value, message="The model returned no text reply.", retryable=False)
 
 
-def test_tool_call_response_is_not_treated_as_text(server: FakeLMStudio) -> None:
-    body = completion(content="partial text")
-    body["choices"][0]["message"]["tool_calls"] = [
-        {"id": "call_1", "type": "function", "function": {"name": "x", "arguments": "{}"}}
-    ]
+def tool_call_payload(*calls: dict[str, Any], content: Any = None) -> dict[str, Any]:
+    body = completion(content=content)
+    body["choices"][0]["message"]["tool_calls"] = list(calls)
     body["choices"][0]["finish_reason"] = "tool_calls"
-    server.replies.append(Reply(body=body))
+    return body
+
+
+def raw_call(call_id: str = "call_1", name: str = "get_project_state",
+             arguments: Any = '{"project_id": "zomah"}') -> dict[str, Any]:
+    return {"id": call_id, "type": "function", "function": {"name": name, "arguments": arguments}}
+
+
+def test_tool_call_response_is_parsed_not_rejected(server: FakeLMStudio) -> None:
+    server.replies.append(
+        Reply(body=tool_call_payload(raw_call(), raw_call("call_2", "other", "{}"),
+                                     content="Let me check."))
+    )
+    response = complete(LMStudioRuntime(base_url=server.base_url), request())
+    assert response.message == AssistantMessage(
+        "Let me check.",
+        (
+            ToolCall(id="call_1", name="get_project_state", arguments={"project_id": "zomah"}),
+            ToolCall(id="call_2", name="other", arguments={}),
+        ),
+    )
+    assert response.usage == TokenUsage(input_tokens=42, output_tokens=7)
+
+
+@pytest.mark.parametrize("content", [None, ""])
+def test_tool_call_without_text_has_empty_text(server: FakeLMStudio, content: Any) -> None:
+    server.replies.append(Reply(body=tool_call_payload(raw_call(), content=content)))
+    response = complete(LMStudioRuntime(base_url=server.base_url), request())
+    assert response.message.text == ""
+    assert [call.id for call in response.message.tool_calls] == ["call_1"]
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        "not-a-dict",
+        {**raw_call(), "type": "code_interpreter"},
+        {**raw_call(), "id": ""},
+        {**raw_call(), "id": None},
+        {"id": "call_1", "type": "function"},
+        raw_call(name=""),
+        raw_call(arguments="{not json"),
+        raw_call(arguments='["a", "list"]'),
+        raw_call(arguments='"a string"'),
+        raw_call(arguments={"project_id": "zomah"}),
+    ],
+)
+def test_malformed_tool_calls_fail_safely(server: FakeLMStudio, call: Any) -> None:
+    server.replies.append(Reply(body=tool_call_payload(call)))
     with pytest.raises(ModelRuntimeError) as raised:
         complete(LMStudioRuntime(base_url=server.base_url), request())
-    assert str(raised.value) == (
-        "The model requested a tool call, which ZOMAH does not support yet."
+    assert_safe(raised.value, message="LM Studio returned an invalid tool call.", retryable=False)
+
+
+def test_duplicate_tool_call_ids_fail_safely(server: FakeLMStudio) -> None:
+    server.replies.append(Reply(body=tool_call_payload(raw_call(), raw_call())))
+    with pytest.raises(ModelRuntimeError, match="invalid tool call"):
+        complete(LMStudioRuntime(base_url=server.base_url), request())
+
+
+def test_tools_are_advertised_as_functions_without_forcing_use(server: FakeLMStudio) -> None:
+    tool = ToolDefinition(
+        name="get_project_state",
+        description="Retrieve the canonical current state for one project.",
+        parameters={"type": "object", "properties": {"project_id": {"type": "string"}},
+                    "required": ["project_id"], "additionalProperties": False},
     )
-    assert raised.value.retryable is False
+    complete(
+        LMStudioRuntime(base_url=server.base_url),
+        ModelRequest(model="qwen/qwen3.5-9b", messages=(UserMessage("hi"),), tools=(tool,)),
+    )
+    body = server.requests[0].body
+    assert body["tools"] == [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_project_state",
+                "description": "Retrieve the canonical current state for one project.",
+                "parameters": {"type": "object",
+                               "properties": {"project_id": {"type": "string"}},
+                               "required": ["project_id"], "additionalProperties": False},
+            },
+        }
+    ]
+    assert "tool_choice" not in body
+    assert set(body) == {"model", "messages", "stream", "tools"}
+
+
+def test_tool_history_is_re_encoded_natively(server: FakeLMStudio) -> None:
+    call = ToolCall(id="call_abc", name="get_project_state", arguments={"project_id": "zomah"})
+    complete(
+        LMStudioRuntime(base_url=server.base_url),
+        request(
+            UserMessage("state?"),
+            AssistantMessage("", (call,)),
+            ToolResultMessage(call_id="call_abc", content='{"ok":true,"result":{"x":1}}'),
+        ),
+    )
+    messages = server.requests[0].body["messages"]
+    assert messages[1] == {
+        "role": "assistant",
+        "content": "",
+        "tool_calls": [
+            {
+                "id": "call_abc",
+                "type": "function",
+                "function": {"name": "get_project_state", "arguments": '{"project_id": "zomah"}'},
+            }
+        ],
+    }
+    assert messages[2] == {
+        "role": "tool",
+        "tool_call_id": "call_abc",
+        "content": '{"ok":true,"result":{"x":1}}',
+    }
 
 
 def test_truncated_response_is_a_retryable_transport_failure(
@@ -445,3 +554,72 @@ print("ok")
     )
     assert completed.returncode == 0, completed.stderr
     assert completed.stdout.strip() == "ok"
+
+
+def test_full_tool_loop_over_the_wire_with_real_capability(
+    server: FakeLMStudio, tmp_path: Path
+) -> None:
+    from zomah.capability_registry import default_capability_registry
+    from zomah.model_tools import build_session_tools
+    from zomah.state import ProjectState, ProjectStateRepository
+    from zomah.tracing import TraceOutcome, TraceStore
+
+    repository = ProjectStateRepository(tmp_path / "zomah.db")
+    repository.initialize()
+    repository.create(
+        ProjectState(
+            id="zomah",
+            name="ZOMAH",
+            phase="worker-session",
+            summary="s",
+            current_focus="f",
+            next_action="Expose one tool.",
+            updated_by="zerrius",
+        )
+    )
+    trace_store = TraceStore(tmp_path / "trace.db")
+    tools, executor = build_session_tools(
+        default_capability_registry(),
+        worker="elyria",
+        trace_store=trace_store,
+        repository=repository,
+    )
+    server.replies.extend(
+        [
+            Reply(body=tool_call_payload(raw_call("call_xyz"), content=None)),
+            Reply(body=completion("The phase is worker-session.", usage={
+                "prompt_tokens": 300, "completion_tokens": 12})),
+        ]
+    )
+    worker = WorkerSession(
+        LMStudioRuntime(base_url=server.base_url),
+        worker="elyria",
+        model="qwen/qwen3.5-9b",
+        context_limit=16384,
+        tools=tools,
+        tool_executor=executor,
+    )
+
+    result = asyncio.run(worker.send("What phase is zomah in? Use your tool."))
+
+    assert result.assistant.text == "The phase is worker-session."
+    first, second = (r.body for r in server.requests)
+    assert [t["function"]["name"] for t in first["tools"]] == ["get_project_state"]
+    assert second["tools"] == first["tools"]
+    assert [m["role"] for m in second["messages"]] == ["user", "assistant", "tool"]
+    assert second["messages"][1]["tool_calls"][0]["id"] == "call_xyz"
+    tool_message = second["messages"][2]
+    assert tool_message["tool_call_id"] == "call_xyz"
+    envelope = json.loads(tool_message["content"])
+    assert envelope["ok"] is True
+    assert envelope["result"]["project"]["phase"] == "worker-session"
+    assert worker.context_used == 312
+    assert [m.role for m in worker.history] == ["user", "assistant", "tool", "assistant"]
+
+    (record,) = trace_store.recent()
+    assert (record.worker, record.capability, record.target, record.outcome) == (
+        "elyria",
+        "get_project_state",
+        "project:zomah",
+        TraceOutcome.SUCCEEDED,
+    )

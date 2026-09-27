@@ -238,6 +238,8 @@ def test_tools_distinguishes_exposure_from_live_model_availability() -> None:
 
     reported = tools_view(context(ConsoleStatus(model="m", tools_available=0)), "").lines
     assert "Model m: 0 tools available this session." in reported
+    one = tools_view(context(ConsoleStatus(model="m", tools_available=1)), "").lines
+    assert "Model m: 1 tool available this session." in one
 
 
 def test_views_handle_empty_registries() -> None:

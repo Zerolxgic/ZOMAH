@@ -5,10 +5,12 @@ Implements ``ModelRuntime`` over LM Studio's OpenAI-compatible, stateless
 the conversation and sends the full ordered history on every completion;
 LM Studio never holds session state.
 
-Only the wire protocol lives here: message and image encoding, response and
-usage parsing, and translating transport/provider failures into operator-safe
-``ModelRuntimeError``s. No model discovery, loading, generation settings,
-streaming, retries, or tool calls.
+Only the wire protocol lives here: message, image, and tool encoding,
+response, tool-call, and usage parsing, and translating transport/provider
+failures into operator-safe ``ModelRuntimeError``s. Tools are advertised with
+the OpenAI-compatible ``tools`` field; the model decides whether to call them
+(no ``tool_choice`` is sent). No model discovery, loading, generation
+settings, streaming, or retries.
 """
 
 from __future__ import annotations
@@ -30,6 +32,9 @@ from zomah.model_runtime import (
     ModelRuntimeError,
     SystemMessage,
     TokenUsage,
+    ToolCall,
+    ToolDefinition,
+    ToolResultMessage,
     UserMessage,
 )
 
@@ -47,7 +52,25 @@ def encode_message(message: ConversationMessage) -> dict[str, Any]:
     if isinstance(message, SystemMessage):
         return {"role": "system", "content": message.text}
     if isinstance(message, AssistantMessage):
-        return {"role": "assistant", "content": message.text}
+        if not message.tool_calls:
+            return {"role": "assistant", "content": message.text}
+        return {
+            "role": "assistant",
+            "content": message.text,
+            "tool_calls": [
+                {
+                    "id": call.id,
+                    "type": "function",
+                    "function": {
+                        "name": call.name,
+                        "arguments": json.dumps(call.arguments, ensure_ascii=False),
+                    },
+                }
+                for call in message.tool_calls
+            ],
+        }
+    if isinstance(message, ToolResultMessage):
+        return {"role": "tool", "tool_call_id": message.call_id, "content": message.content}
     if isinstance(message, UserMessage):
         if not message.attachments:
             return {"role": "user", "content": message.text}
@@ -66,12 +89,26 @@ def encode_message(message: ConversationMessage) -> dict[str, Any]:
     raise TypeError(f"unsupported message type: {type(message).__name__}")
 
 
-def encode_request(request: ModelRequest) -> dict[str, Any]:
+def encode_tool(tool: ToolDefinition) -> dict[str, Any]:
     return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description,
+            "parameters": dict(tool.parameters),
+        },
+    }
+
+
+def encode_request(request: ModelRequest) -> dict[str, Any]:
+    body: dict[str, Any] = {
         "model": request.model,
         "messages": [encode_message(message) for message in request.messages],
         "stream": False,
     }
+    if request.tools:
+        body["tools"] = [encode_tool(tool) for tool in request.tools]
+    return body
 
 
 def _malformed() -> ModelRuntimeError:
@@ -82,6 +119,35 @@ def _token_count(value: Any) -> int | None:
     if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
         return value
     return None
+
+
+def _invalid_tool_call() -> ModelRuntimeError:
+    return ModelRuntimeError("LM Studio returned an invalid tool call.")
+
+
+def _decode_tool_calls(raw_calls: Any) -> tuple[ToolCall, ...]:
+    if not isinstance(raw_calls, list):
+        raise _invalid_tool_call()
+    calls: list[ToolCall] = []
+    for raw in raw_calls:
+        if not isinstance(raw, dict) or raw.get("type") != "function":
+            raise _invalid_tool_call()
+        call_id, function = raw.get("id"), raw.get("function")
+        if not isinstance(call_id, str) or not call_id.strip() or not isinstance(function, dict):
+            raise _invalid_tool_call()
+        name, arguments = function.get("name"), function.get("arguments")
+        if not isinstance(name, str) or not name.strip() or not isinstance(arguments, str):
+            raise _invalid_tool_call()
+        try:
+            decoded = json.loads(arguments)
+        except json.JSONDecodeError as exc:
+            raise _invalid_tool_call() from exc
+        if not isinstance(decoded, dict):
+            raise _invalid_tool_call()
+        calls.append(ToolCall(id=call_id, name=name, arguments=decoded))
+    if len({call.id for call in calls}) != len(calls):
+        raise _invalid_tool_call()
+    return tuple(calls)
 
 
 def decode_response(payload: Any) -> ModelResponse:
@@ -95,13 +161,16 @@ def decode_response(payload: Any) -> ModelResponse:
     message = choices[0].get("message")
     if not isinstance(message, dict):
         raise _malformed()
-    if message.get("tool_calls"):
-        raise ModelRuntimeError(
-            "The model requested a tool call, which ZOMAH does not support yet."
-        )
     content = message.get("content")
-    if not isinstance(content, str) or not content.strip():
-        raise ModelRuntimeError("The model returned no text reply.")
+    raw_calls = message.get("tool_calls")
+    if raw_calls:
+        tool_calls = _decode_tool_calls(raw_calls)
+        text = content if isinstance(content, str) else ""
+    else:
+        tool_calls = ()
+        if not isinstance(content, str) or not content.strip():
+            raise ModelRuntimeError("The model returned no text reply.")
+        text = content
 
     usage = None
     reported = payload.get("usage")
@@ -110,7 +179,7 @@ def decode_response(payload: Any) -> ModelResponse:
         output_tokens = _token_count(reported.get("completion_tokens"))
         if input_tokens is not None or output_tokens is not None:
             usage = TokenUsage(input_tokens=input_tokens, output_tokens=output_tokens)
-    return ModelResponse(message=AssistantMessage(content), usage=usage)
+    return ModelResponse(message=AssistantMessage(text, tool_calls), usage=usage)
 
 
 def _is_timeout(error: BaseException | None) -> bool:

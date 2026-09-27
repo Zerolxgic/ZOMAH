@@ -47,6 +47,7 @@ from zomah.console.operator import OperatorAccess, build_default_operator_access
 from zomah.console.routing import CommandSubmission, parse_submission, run_command
 from zomah.console.status import STATUS_LABELS, ConsoleStatus, status_values
 from zomah.lmstudio import DEFAULT_BASE_URL, LMStudioRuntime
+from zomah.model_tools import build_session_tools
 from zomah.model_runtime import ModelRuntimeError
 from zomah.worker_session import SessionBusyError, WorkerSession
 
@@ -688,17 +689,30 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
         parser.error("--context-limit requires --model")
     if args.context_limit is not None and args.context_limit <= 0:
         parser.error("--context-limit must be positive")
+    # Long-lived harness dependencies, built once and shared: the human
+    # boundary and the model's tools use the same stores but separate paths.
+    registry = default_capability_registry()
+    access = build_default_operator_access(args.operator)
     session = None
     if args.model is not None:
+        tools, executor = build_session_tools(
+            registry,
+            worker=DEFAULT_WORKER,
+            trace_store=access.trace_store,
+            repository=access.project_repository,
+        )
         session = WorkerSession(
             LMStudioRuntime(base_url=args.lmstudio_base_url),
             worker=DEFAULT_WORKER,
             model=args.model,
             context_limit=args.context_limit,
+            tools=tools,
+            tool_executor=executor,
         )
     return OperatorConsole(
         ConsoleStatus(active_project_id=args.project_id),
-        operator_access=build_default_operator_access(args.operator),
+        capabilities=registry,
+        operator_access=access,
         worker_session=session,
     )
 

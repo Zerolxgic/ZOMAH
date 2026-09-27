@@ -47,7 +47,12 @@ from zomah.console.operator import OperatorAccess, build_default_operator_access
 from zomah.console.routing import CommandSubmission, parse_submission, run_command
 from zomah.console.status import STATUS_LABELS, ConsoleStatus, status_values
 from zomah.lmstudio import DEFAULT_BASE_URL, LMStudioRuntime
-from zomah.model_tools import build_session_tools
+from zomah.access import ReadScope
+from zomah.model_tools import (
+    DEFAULT_SESSION_TOOL_IDS,
+    READ_FILE_TOOL_ID,
+    build_session_tools,
+)
 from zomah.model_runtime import ModelRuntimeError
 from zomah.worker_session import SessionBusyError, WorkerSession
 
@@ -684,9 +689,22 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
         default=DEFAULT_BASE_URL,
         help=f"LM Studio OpenAI-compatible base URL (default: {DEFAULT_BASE_URL})",
     )
+    parser.add_argument(
+        "--read-root",
+        dest="read_roots",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help=(
+            "directory the model may read with read_file (repeatable; "
+            "default: no filesystem read access)"
+        ),
+    )
     args = parser.parse_args(argv)
     if args.model is None and args.context_limit is not None:
         parser.error("--context-limit requires --model")
+    if args.model is None and args.read_roots:
+        parser.error("--read-root requires --model")
     if args.context_limit is not None and args.context_limit <= 0:
         parser.error("--context-limit must be positive")
     # Long-lived harness dependencies, built once and shared: the human
@@ -695,11 +713,26 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
     access = build_default_operator_access(args.operator)
     session = None
     if args.model is not None:
+        allowed_ids: tuple[str, ...] = DEFAULT_SESSION_TOOL_IDS
+        dependencies: dict[str, dict[str, Any]] = {
+            "get_project_state": {"repository": access.project_repository},
+        }
+        if args.read_roots:
+            try:
+                read_scope = ReadScope.from_paths(args.read_roots)
+            except (OSError, ValueError):
+                parser.error(
+                    "--read-root must name existing directories: "
+                    + ", ".join(args.read_roots)
+                )
+            allowed_ids += (READ_FILE_TOOL_ID,)
+            dependencies[READ_FILE_TOOL_ID] = {"scope": read_scope}
         tools, executor = build_session_tools(
             registry,
             worker=DEFAULT_WORKER,
             trace_store=access.trace_store,
-            repository=access.project_repository,
+            dependencies=dependencies,
+            allowed_ids=allowed_ids,
         )
         session = WorkerSession(
             LMStudioRuntime(base_url=args.lmstudio_base_url),

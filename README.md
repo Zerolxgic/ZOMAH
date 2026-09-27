@@ -94,6 +94,7 @@ tests/test_console_worker.py         console ↔ WorkerSession wiring tests
 src/zomah/model_tools.py             capability → model tool bridge + executor
 tests/test_model_tools.py            tool exposure policy + executor tests
 tests/test_worker_session_tools.py   WorkerSession tool-loop tests
+tests/test_read_file_tool.py         read_file tool + dependency routing tests
 src/zomah/console/clipboard.py       wl-paste clipboard image source
 tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
 tests/test_console_attachments.py    composer attachment behavior tests
@@ -164,6 +165,17 @@ With `--model`, the console builds one `WorkerSession` over `LMStudioRuntime` at
 A live console session exposes exactly one model-visible tool, `get_project_state`. Exposure is an explicit allowlist (`zomah.model_tools.DEFAULT_SESSION_TOOL_IDS`); each id must be registered, `agent_exposed`, `VERIFIED`, and `READ`, or session construction fails. Registry exposure alone never makes a capability visible to a session. The tool's parameters are the capability request model's own JSON schema.
 
 The model decides whether to call the tool; nothing forces or infers tool use. `WorkerSession` advertises its tools, and when the model answers with native tool calls it runs each advertised call (in order, one at a time) through an injected executor, appends the results, and asks the model again until it gives a final answer. Calls to tools outside the session snapshot are answered with a `tool_not_available` result and never executed. The ZOMAH executor invokes through `invoke_registered_model_capability` with worker `elyria`, so validation, the registry exposure check, and mandatory tracing apply unchanged; the resulting `CapabilityEnvelope` (success or normalized error) is returned to the model as compact JSON. Loops are bounded (4 tool rounds, 4 calls per response, 8 per turn). The turn (user message, tool calls, tool results, final answer) is committed to session history only when the final answer arrives; a failure commits nothing, though a READ tool that already ran stays traced. Context usage comes from the final completion. LM Studio receives the native OpenAI-compatible `tools` field and `tool`/`tool_calls` history.
+
+## Filesystem reads for the model (T2a/T2b)
+
+```bash
+zomah-console --project zomah --model qwen/qwen3.5-9b --context-limit 16384 \
+  --read-root /home/zerrius/Projects/ZOMAH [--read-root /another/dir]
+```
+
+`read_file` is registered (READ, VERIFIED, user and agent exposed) but is only visible to a model session when at least one `--read-root` is configured; otherwise the session keeps exactly `get_project_state` (`Tools: 1`). Roots are explicit (no default to cwd, `$HOME`, `/`, or the repository), resolved once at startup into a `ReadScope`, and invalid roots fail startup. `--read-root` requires `--model`. The existing scope rules apply unchanged: absolute paths only, canonicalized before containment, no `..` or symlink escape, regular UTF-8 files only, bounded output with `next_start_line` continuation. Denials and file errors return to the model as capability-envelope tool results. Traces record `elyria | read_file | <outcome> | <path>`, never file contents.
+
+Each `CapabilityDefinition` declares the harness dependencies its handler needs (`get_project_state`: `repository`; `read_file`: `scope`). The model tool executor takes an explicit `{capability_id: {name: object}}` map, checks every entry against those declarations when the session is built (missing, extra, or stray entries fail construction), and passes each call only its own capability's entry.
 
 ## Operator capability boundary
 

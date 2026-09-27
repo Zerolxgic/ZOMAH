@@ -452,7 +452,10 @@ def tool_stack(tmp_path: Path) -> tuple[Any, Any, Any]:
     )
     registry = default_capability_registry()
     tools, executor = build_session_tools(
-        registry, worker="elyria", trace_store=access.trace_store, repository=repository
+        registry,
+        worker="elyria",
+        trace_store=access.trace_store,
+        dependencies={"get_project_state": {"repository": repository}},
     )
     return registry, access, (tools, executor)
 
@@ -468,7 +471,9 @@ def test_cli_session_exposes_one_tool_backed_by_the_shared_stores(
     assert app.status.tools_available == 1
     executor = session._executor
     assert executor._trace_store is app._operator_access.trace_store
-    assert executor._dependencies == {"repository": app._operator_access.project_repository}
+    assert executor._dependencies == {
+        "get_project_state": {"repository": app._operator_access.project_repository}
+    }
     assert executor._worker == session.worker == "elyria"
     assert app._capabilities is executor._registry
 

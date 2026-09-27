@@ -107,7 +107,10 @@ def test_default_session_exposes_exactly_get_project_state(
 ) -> None:
     registry = registry_with(probe_definition())  # agent-exposed, but not allowlisted
     tools, _ = build_session_tools(
-        registry, worker="elyria", trace_store=trace_store, repository=repository
+        registry,
+        worker="elyria",
+        trace_store=trace_store,
+        dependencies={"get_project_state": {"repository": repository}},
     )
     assert DEFAULT_SESSION_TOOL_IDS == ("get_project_state",)
     assert [tool.name for tool in tools] == ["get_project_state"]
@@ -147,7 +150,10 @@ def executor(
 ) -> CapabilityToolExecutor:
     registry = registry or default_capability_registry()
     return build_session_tools(
-        registry, worker="elyria", trace_store=trace_store, repository=repository
+        registry,
+        worker="elyria",
+        trace_store=trace_store,
+        dependencies={"get_project_state": {"repository": repository}},
     )[1]
 
 

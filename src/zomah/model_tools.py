@@ -8,7 +8,9 @@ exposure alone never makes a capability visible to a session.
 ``CapabilityToolExecutor`` runs model tool calls through the existing
 model-facing boundary, ``invoke_registered_model_capability``, so validation,
 the registry exposure check, mandatory tracing under the worker's identity,
-and error normalization all apply unchanged. The resulting
+and error normalization all apply unchanged. Harness dependencies are routed
+per capability: a call receives only the entry configured for that capability
+id, which must match the names the capability declares exactly. The resulting
 ``CapabilityEnvelope`` (success or normalized error) is returned to the model
 as compact JSON; capability errors are tool results, not turn failures.
 """
@@ -16,7 +18,8 @@ as compact JSON; capability errors are tool results, not turn failures.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any
 
 from zomah.capability_invocation import invoke_registered_model_capability
@@ -31,8 +34,14 @@ from zomah.capability_runtime import CapabilityEnvelope, CapabilityError
 from zomah.model_runtime import ToolCall, ToolDefinition
 from zomah.tracing import TraceStore
 
-# The tools a worker session exposes in this slice.
+# Tools every live worker session exposes.
 DEFAULT_SESSION_TOOL_IDS: tuple[str, ...] = ("get_project_state",)
+# Exposed only when the harness configures filesystem read roots.
+READ_FILE_TOOL_ID = "read_file"
+
+# Harness-owned keyword arguments per capability id, e.g.
+# {"get_project_state": {"repository": repo}, "read_file": {"scope": scope}}.
+CapabilityDependencies = Mapping[str, Mapping[str, Any]]
 READ_ONLY: frozenset[CapabilityAuthority] = frozenset({CapabilityAuthority.READ})
 
 
@@ -86,6 +95,40 @@ def select_session_capabilities(
     return tuple(selected)
 
 
+def route_dependencies(
+    capabilities: Sequence[CapabilityDefinition],
+    dependencies: CapabilityDependencies,
+) -> dict[str, Mapping[str, Any]]:
+    """Validate and freeze one dependency entry per session capability.
+
+    Each capability gets exactly the names it declares: a missing name, an
+    extra name, or an entry for a capability outside the session fails here,
+    at construction, rather than on a model call.
+    """
+
+    session_ids = {definition.id for definition in capabilities}
+    stray = sorted(set(dependencies) - session_ids)
+    if stray:
+        raise ToolExposureError(
+            f"dependencies configured for capabilities not in this session: {', '.join(stray)}"
+        )
+    routed: dict[str, Mapping[str, Any]] = {}
+    for definition in capabilities:
+        entry = dict(dependencies.get(definition.id, {}))
+        missing = sorted(definition.dependencies - entry.keys())
+        extra = sorted(entry.keys() - definition.dependencies)
+        if missing:
+            raise ToolExposureError(
+                f"{definition.id} requires harness dependencies: {', '.join(missing)}"
+            )
+        if extra:
+            raise ToolExposureError(
+                f"{definition.id} does not accept dependencies: {', '.join(extra)}"
+            )
+        routed[definition.id] = MappingProxyType(entry)
+    return routed
+
+
 class CapabilityToolExecutor:
     """Runs session tool calls through the model-facing capability boundary."""
 
@@ -96,15 +139,15 @@ class CapabilityToolExecutor:
         *,
         worker: str,
         trace_store: TraceStore,
-        **dependencies: Any,
+        dependencies: CapabilityDependencies,
     ) -> None:
         self._registry = registry
-        self._ids = frozenset(definition.id for definition in capabilities)
         self._worker = worker
         self._trace_store = trace_store
-        # Harness-owned objects (e.g. the ProjectState repository), never
-        # taken from model arguments.
-        self._dependencies = dependencies
+        # Harness-owned objects per capability id (a repository, a read
+        # scope), never taken from model arguments.
+        self._dependencies = route_dependencies(capabilities, dependencies)
+        self._ids = frozenset(self._dependencies)
 
     async def execute(self, call: ToolCall) -> str:
         if call.name not in self._ids:
@@ -124,7 +167,7 @@ class CapabilityToolExecutor:
                 dict(call.arguments),
                 worker=self._worker,
                 trace_store=self._trace_store,
-                **self._dependencies,
+                **self._dependencies[call.name],
             )
         return envelope.model_dump_json(exclude_none=True)
 
@@ -134,13 +177,17 @@ def build_session_tools(
     *,
     worker: str,
     trace_store: TraceStore,
+    dependencies: CapabilityDependencies,
     allowed_ids: Sequence[str] = DEFAULT_SESSION_TOOL_IDS,
-    **dependencies: Any,
 ) -> tuple[tuple[ToolDefinition, ...], CapabilityToolExecutor]:
     """Tool definitions and their executor for one session, from one allowlist."""
 
     capabilities = select_session_capabilities(registry, allowed_ids)
     executor = CapabilityToolExecutor(
-        registry, capabilities, worker=worker, trace_store=trace_store, **dependencies
+        registry,
+        capabilities,
+        worker=worker,
+        trace_store=trace_store,
+        dependencies=dependencies,
     )
     return tuple(tool_definition(definition) for definition in capabilities), executor

@@ -582,7 +582,7 @@ def test_full_tool_loop_over_the_wire_with_real_capability(
         default_capability_registry(),
         worker="elyria",
         trace_store=trace_store,
-        repository=repository,
+        dependencies={"get_project_state": {"repository": repository}},
     )
     server.replies.extend(
         [

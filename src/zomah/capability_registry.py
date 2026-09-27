@@ -10,7 +10,10 @@ from pydantic import BaseModel
 from zomah.capabilities import (
     GetProjectStateRequest,
     GetProjectStateResponse,
+    ReadFileRequest,
+    ReadFileResponse,
     get_project_state,
+    read_file,
 )
 
 
@@ -34,6 +37,9 @@ class CapabilityLifecycle(StrEnum):
 
 
 CapabilityHandler = Callable[..., Any]
+
+# Keyword names the invocation boundaries use themselves; never dependencies.
+RESERVED_INVOCATION_NAMES = frozenset({"worker", "operator_id", "trace_store"})
 ModelType = type[BaseModel]
 
 
@@ -43,6 +49,10 @@ class CapabilityDefinition:
 
     The registry stores metadata and references the existing implementation.
     It does not wrap, duplicate, or reinterpret capability behavior.
+
+    ``dependencies`` names the harness-owned keyword arguments the handler
+    requires (for example ``repository`` or ``scope``). Callers supply exactly
+    these; they are never taken from a request payload.
     """
 
     id: str
@@ -54,12 +64,18 @@ class CapabilityDefinition:
     request_model: ModelType
     response_model: ModelType
     handler: CapabilityHandler
+    dependencies: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.id or self.id.strip() != self.id:
             raise ValueError("capability id must be non-empty and already normalized")
         if not self.description.strip():
             raise ValueError("capability description must be non-empty")
+        if not isinstance(self.dependencies, frozenset):
+            raise TypeError("capability dependencies must be a frozenset of names")
+        for name in self.dependencies:
+            if not name.isidentifier() or name in RESERVED_INVOCATION_NAMES:
+                raise ValueError(f"invalid capability dependency name: {name!r}")
 
 
 class DuplicateCapabilityError(ValueError):
@@ -116,8 +132,8 @@ class CapabilityRegistry:
 def default_capability_registry() -> CapabilityRegistry:
     """Build the explicit initial ZOMAH capability registry.
 
-    v0 intentionally begins with one already-verified READ capability so the
-    registry can be proven before broader capability migration or TUI work.
+    Registration describes capabilities; it does not make any of them
+    available to a model session (session tool sets are explicit allowlists).
     """
 
     registry = CapabilityRegistry()
@@ -132,6 +148,24 @@ def default_capability_registry() -> CapabilityRegistry:
             request_model=GetProjectStateRequest,
             response_model=GetProjectStateResponse,
             handler=get_project_state,
+            dependencies=frozenset({"repository"}),
+        )
+    )
+    registry.register(
+        CapabilityDefinition(
+            id="read_file",
+            description=(
+                "Read a bounded UTF-8 text slice from an absolute path inside "
+                "configured read roots."
+            ),
+            authority=CapabilityAuthority.READ,
+            lifecycle=CapabilityLifecycle.VERIFIED,
+            user_exposed=True,
+            agent_exposed=True,
+            request_model=ReadFileRequest,
+            response_model=ReadFileResponse,
+            handler=read_file,
+            dependencies=frozenset({"scope"}),
         )
     )
     return registry

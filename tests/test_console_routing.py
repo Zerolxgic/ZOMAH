@@ -226,7 +226,10 @@ def test_tools_reads_registry_metadata_without_invoking_handlers() -> None:
 
 def test_tools_distinguishes_exposure_from_live_model_availability() -> None:
     no_session = tools_view(context(), "").lines
-    assert "Capability registry: 1 registered" in no_session
+    assert "Capability registry: 2 registered" in no_session
+    assert ["read_file", "READ", "VERIFIED", "yes", "yes"] in [
+        line.split() for line in no_session
+    ]
     assert ["get_project_state", "READ", "VERIFIED", "yes", "yes"] in [
         line.split() for line in no_session
     ]

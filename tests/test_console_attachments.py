@@ -295,7 +295,72 @@ def test_help_documents_image_paste_and_removal() -> None:
         await pilot.press("escape", "enter")
         await pilot.pause()
         output = str(app.query_one(".entry.result", Static).content)
-        assert "Ctrl+Shift+V" in output and "attach clipboard image" in output
-        assert "remove last image when the text is empty" in output
+        lines = [" ".join(line.split()) for line in output.split("\n")]
+        assert "Ctrl+Shift+V attach clipboard image when supported by terminal" in lines
+        assert "Alt+V attach clipboard image fallback" in lines
+        assert "Backspace remove last image when the text is empty" in lines
 
     run_console(scenario, FakeClipboard())
+
+
+@pytest.mark.parametrize(
+    "key_event",
+    [
+        events.Key("ctrl+shift+v", None),
+        events.Key("alt+v", None),  # kitty keyboard protocol form
+        events.Key("alt+v", "v"),  # legacy ESC v form, printable
+    ],
+    ids=["ctrl+shift+v", "alt+v-kitty", "alt+v-legacy"],
+)
+def test_image_paste_keys_share_the_paste_image_action(
+    monkeypatch: pytest.MonkeyPatch, key_event: events.Key
+) -> None:
+    image = png(1024)
+    actions: list[str] = []
+    original = Composer.action_paste_image
+
+    def recording_action(self: Composer) -> None:
+        actions.append("paste_image")
+        original(self)
+
+    monkeypatch.setattr(Composer, "action_paste_image", recording_action)
+    clipboard = FakeClipboard(image)
+
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        await pilot.press(*"draft")
+        # Posted to the app, as the terminal driver delivers keys.
+        app.post_message(key_event)
+        await pilot.pause()
+        await app.workers.wait_for_complete()
+        await pilot.pause()
+        assert actions == ["paste_image"]
+        assert composer.attachments == (image,)
+        assert composer.text == "draft"
+        assert strip_text(app) == "Image · image/png · 1 KiB"
+
+    run_console(scenario, clipboard)
+    assert len(clipboard.threads) == 1
+
+
+def test_alt_v_binding_and_ctrl_shift_v_binding_name_the_same_action() -> None:
+    actions = {
+        key: binding.action
+        for binding in Composer.BINDINGS
+        for key in binding.key.split(",")
+        if key in {"ctrl+shift+v", "alt+v"}
+    }
+    assert actions == {"ctrl+shift+v": "paste_image", "alt+v": "paste_image"}
+
+
+def test_plain_v_is_still_typed() -> None:
+    async def scenario(app: OperatorConsole, pilot: Pilot) -> None:
+        composer = app.query_one(Composer)
+        app.post_message(events.Key("v", "v"))
+        await pilot.pause()
+        assert composer.text == "v"
+        assert composer.attachments == ()
+        assert clipboard.threads == []
+
+    clipboard = FakeClipboard()
+    run_console(scenario, clipboard)

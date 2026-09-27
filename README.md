@@ -128,7 +128,7 @@ Any submission starting with `/` is routed as a command (`src/zomah/console/rout
 
 ### Clipboard images
 
-Ctrl+Shift+V attaches the clipboard image (PNG, JPEG, or WebP) to the composer draft. In Ghostty (1.3+, GTK) the default performable `ctrl+shift+v=paste_from_clipboard` binding pastes text as usual and passes the key through to the console only when the clipboard holds no text, so text paste is unchanged. Images are read from the Wayland clipboard with `wl-paste` (wl-clipboard), off the UI loop, with fixed arguments, a 5 s timeout, and a 10 MiB per-image limit; a draft holds at most 4 images. Attached images appear in a strip above the composer; Backspace in an empty composer removes the most recent one. Images live only in the draft: submission sends them with the text to the transcript as metadata only, and they are never written to disk. No model receives them yet.
+Alt+V attaches the clipboard image (PNG, JPEG, or WebP) to the composer draft. Ctrl+Shift+V triggers the same action on a best-effort basis, only if the terminal passes the key through for an image-only clipboard; on the verified Ghostty 1.3.1 setup it does not, so Alt+V is the dependable key. Text paste is unchanged. Images are read from the Wayland clipboard with `wl-paste` (wl-clipboard), off the UI loop, with fixed arguments, a 5 s timeout, and a 10 MiB per-image limit; a draft holds at most 4 images. Attached images appear in a strip above the composer; Backspace in an empty composer removes the most recent one. Images live only in the draft: submission sends them with the text to the transcript as metadata only, and they are never written to disk. No model receives them yet.
 
 ## Operator capability boundary
 

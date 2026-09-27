@@ -117,9 +117,9 @@ class Composer(TextArea):
         Binding("ctrl+a", "select_all", "Select all", show=False),
         Binding("shift+enter,ctrl+j", "newline", "Newline", show=False),
         Binding("escape", "dismiss_suggestions", "Dismiss", show=False),
-        # Reaches the app only when the terminal passes it through; Ghostty
-        # does so when the clipboard holds no text (an image-only clipboard).
-        Binding("ctrl+shift+v", "paste_image", "Paste image", show=False),
+        # Ctrl+Shift+V is best effort: it reaches the app only if the terminal
+        # passes it through. Alt+V is the explicit fallback for the same action.
+        Binding("ctrl+shift+v,alt+v", "paste_image", "Paste image", show=False),
     ]
 
     class Submitted(Message):
@@ -157,6 +157,15 @@ class Composer(TextArea):
         self._dismissed_text: str | None = None
 
     def on_key(self, event: events.Key) -> None:
+        # Legacy terminals send Alt+V as ESC v, a printable key that TextArea
+        # would insert as "v" before bindings run; claim it for the same
+        # action the binding uses. (Kitty-protocol Alt+V is not printable and
+        # reaches the binding.)
+        if event.key == "alt+v" and event.is_printable and not self.read_only:
+            event.stop()
+            event.prevent_default()
+            self.action_paste_image()
+            return
         # TextArea inserts a newline for Enter before bindings are consulted,
         # so Enter is claimed here; prevent_default skips TextArea's handler.
         if event.key != "enter" or self.read_only:

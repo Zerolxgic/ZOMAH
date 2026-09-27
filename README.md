@@ -88,6 +88,8 @@ src/zomah/attachments.py             in-memory ImageAttachment + limits (shared)
 src/zomah/model_runtime.py           provider-neutral model runtime contract
 src/zomah/worker_session.py          ephemeral WorkerSession over a ModelRuntime
 tests/test_worker_session.py         worker session contract tests (fake runtime)
+src/zomah/lmstudio.py                LM Studio ModelRuntime adapter
+tests/test_lmstudio_runtime.py       adapter tests against a local fake HTTP server
 src/zomah/console/clipboard.py       wl-paste clipboard image source
 tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
 tests/test_console_attachments.py    composer attachment behavior tests
@@ -136,6 +138,14 @@ Alt+V attaches the clipboard image (PNG, JPEG, or WebP) to the composer draft. C
 ## Worker session (T1a contracts)
 
 `zomah.model_runtime` defines a provider-neutral, async completion contract: `SystemMessage`, `UserMessage` (text plus in-memory `ImageAttachment`s, never pre-encoded), `AssistantMessage`, `ModelRequest`, `ModelResponse`, runtime-reported `TokenUsage`, the `ModelRuntime` protocol, and one operator-safe `ModelRuntimeError`. `zomah.worker_session.WorkerSession` holds ephemeral, in-memory session state over an injected runtime: committed history, worker/model identity, an optional configured context limit, the latest reported usage, and an (empty) tool snapshot. `send()` commits the user turn and reply only on success; a runtime failure commits nothing; a concurrent `send()` raises `SessionBusyError`. Context usage comes only from runtime reports and is `None` when unreported. No model runtime adapter, tools, persistence, or console wiring exists yet.
+
+## LM Studio runtime (T1b)
+
+`zomah.lmstudio.LMStudioRuntime` implements `ModelRuntime` over LM Studio's OpenAI-compatible, stateless `POST {base_url}/chat/completions` (default base URL `http://127.0.0.1:1234/v1`, `stream: false`). `WorkerSession` sends the full ordered conversation every time; LM Studio holds no session state. The request carries only `model` (the caller's exact id, unchanged), `messages`, and `stream`. Images are encoded to `data:<mime>;base64,...` `image_url` parts only inside the adapter. Usage maps `prompt_tokens`/`completion_tokens` to `TokenUsage`, or `None` when unreported. Transport and provider failures become operator-safe `ModelRuntimeError`s (connection, timeout, truncated body, and 5xx/408/429 retryable; other 4xx and malformed responses not). Tool-call responses are rejected until tools exist. The request uses the standard library in a worker thread with a finite per-operation timeout, ignores proxy environment variables, never retries, and never loads, discovers, or configures models.
+
+```bash
+python examples/lmstudio_turn.py --model <exact id from GET /v1/models> "Say hello in one sentence."
+```
 
 ## Operator capability boundary
 

@@ -38,6 +38,8 @@ from zomah.tracing import TraceStore
 DEFAULT_SESSION_TOOL_IDS: tuple[str, ...] = ("get_project_state",)
 # Exposed only when the harness configures filesystem read roots.
 READ_FILE_TOOL_ID = "read_file"
+# Exposed only when knowledge search is explicitly enabled over those roots.
+SEARCH_KNOWLEDGE_TOOL_ID = "search_knowledge"
 
 # Harness-owned keyword arguments per capability id, e.g.
 # {"get_project_state": {"repository": repo}, "read_file": {"scope": scope}}.

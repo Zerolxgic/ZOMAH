@@ -107,7 +107,11 @@ def execute(executor: Any, name: str, **arguments: Any) -> dict[str, Any]:
 
 def test_read_file_is_registered_as_verified_read_for_users_and_agents() -> None:
     registry = default_capability_registry()
-    assert [d.id for d in registry.all()] == ["get_project_state", "read_file"]
+    assert [d.id for d in registry.all()] == [
+        "get_project_state",
+        "read_file",
+        "search_knowledge",
+    ]
     definition = registry.get("read_file")
     assert (definition.authority, definition.lifecycle) == (
         CapabilityAuthority.READ,
@@ -148,7 +152,7 @@ def test_default_session_exposes_only_get_project_state_despite_registry(
     repository: ProjectStateRepository, trace_store: TraceStore
 ) -> None:
     registry = default_capability_registry()
-    assert len(registry.agent_exposed()) == 2
+    assert len(registry.agent_exposed()) == 3
     tools, _ = build_session_tools(
         registry,
         worker="elyria",

@@ -12,8 +12,11 @@ from zomah.capabilities import (
     GetProjectStateResponse,
     ReadFileRequest,
     ReadFileResponse,
+    SearchKnowledgeRequest,
+    SearchKnowledgeResponse,
     get_project_state,
     read_file,
+    search_knowledge,
 )
 
 
@@ -166,6 +169,23 @@ def default_capability_registry() -> CapabilityRegistry:
             response_model=ReadFileResponse,
             handler=read_file,
             dependencies=frozenset({"scope"}),
+        )
+    )
+    registry.register(
+        CapabilityDefinition(
+            id="search_knowledge",
+            description=(
+                "Search indexed UTF-8 knowledge files inside configured read roots "
+                "and return ranked references and excerpts."
+            ),
+            authority=CapabilityAuthority.READ,
+            lifecycle=CapabilityLifecycle.VERIFIED,
+            user_exposed=True,
+            agent_exposed=True,
+            request_model=SearchKnowledgeRequest,
+            response_model=SearchKnowledgeResponse,
+            handler=search_knowledge,
+            dependencies=frozenset({"index"}),
         )
     )
     return registry

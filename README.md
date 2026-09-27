@@ -96,6 +96,7 @@ tests/test_model_tools.py            tool exposure policy + executor tests
 tests/test_worker_session_tools.py   WorkerSession tool-loop tests
 tests/test_read_file_tool.py         read_file tool + dependency routing tests
 tests/test_worker_session_budget.py  per-turn tool-result budget tests
+tests/test_search_knowledge_tool.py  search_knowledge tool + shared scope tests
 src/zomah/console/clipboard.py       wl-paste clipboard image source
 tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
 tests/test_console_attachments.py    composer attachment behavior tests
@@ -181,6 +182,15 @@ Each `CapabilityDefinition` declares the harness dependencies its handler needs 
 ## Per-turn tool-result budget (T2d)
 
 `WorkerSession` bounds the combined size of tool results in one operator turn: the sum of `len()` over every tool result string (success envelopes, error envelopes, and `tool_not_available` results alike) may not exceed `tool_result_budget_chars` (default 32768, `--tool-result-budget-chars N`, requires `--model`). This is a deterministic local character bound, not a token estimate, and it is configured independently of `--context-limit`. The counter starts at zero each turn and is checked after a tool returns and before its result is appended; a result that would exceed the budget is never truncated or appended. Instead the turn stops with `Tool results exceeded this session's per-turn budget; the turn was stopped.`, no further completion is made, and nothing from the turn is committed. A READ tool that already ran stays traced. The existing round and call-count limits still apply independently.
+
+## Knowledge search for the model (T2e)
+
+```bash
+zomah-console --project zomah --model qwen/qwen3.5-9b --context-limit 16384 \
+  --read-root /home/zerrius/Projects/ZOMAH --enable-knowledge-search
+```
+
+`search_knowledge` is registered (READ, VERIFIED, user and agent exposed, dependency `index`) and becomes the third session tool only with `--enable-knowledge-search`, which requires `--model` and at least one `--read-root` (`Tools: 3`). The console builds one `KnowledgeIndex` at startup at `default_knowledge_db_path()` over the same `ReadScope` instance `read_file` uses, so every search result is a path `read_file` is allowed to open. The index still refreshes incrementally before every search and still covers only `.md`/`.txt`/`.rst` files, skipping symlinks, tooling directories, non-UTF-8 files, and files over 2 MiB. Search returns ranked references with short excerpts; the model decides whether to `read_file` a result, and ZOMAH never reads on its own. Search results count toward the per-turn tool-result budget like any other tool result. Traces record `elyria | search_knowledge | <outcome> | knowledge-search`, never the query or excerpts.
 
 ## Operator capability boundary
 

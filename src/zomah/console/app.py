@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import sqlite3
 from dataclasses import replace
 import getpass
 from collections.abc import Sequence
@@ -48,9 +49,16 @@ from zomah.console.routing import CommandSubmission, parse_submission, run_comma
 from zomah.console.status import STATUS_LABELS, ConsoleStatus, status_values
 from zomah.lmstudio import DEFAULT_BASE_URL, LMStudioRuntime
 from zomah.access import ReadScope
+from zomah.knowledge import (
+    KnowledgeIndex,
+    KnowledgeIndexError,
+    KnowledgeIndexUnavailable,
+    default_knowledge_db_path,
+)
 from zomah.model_tools import (
     DEFAULT_SESSION_TOOL_IDS,
     READ_FILE_TOOL_ID,
+    SEARCH_KNOWLEDGE_TOOL_ID,
     build_session_tools,
 )
 from zomah.model_runtime import ModelRuntimeError
@@ -713,7 +721,19 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
             "default: no filesystem read access)"
         ),
     )
+    parser.add_argument(
+        "--enable-knowledge-search",
+        action="store_true",
+        help=(
+            "let the model search .md/.txt/.rst files inside the --read-root "
+            "directories (requires --read-root)"
+        ),
+    )
     args = parser.parse_args(argv)
+    if args.model is None and args.enable_knowledge_search:
+        parser.error("--enable-knowledge-search requires --model")
+    if args.enable_knowledge_search and not args.read_roots:
+        parser.error("--enable-knowledge-search requires at least one --read-root")
     if args.model is None and args.context_limit is not None:
         parser.error("--context-limit requires --model")
     if args.model is None and args.read_roots:
@@ -745,6 +765,18 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
                 )
             allowed_ids += (READ_FILE_TOOL_ID,)
             dependencies[READ_FILE_TOOL_ID] = {"scope": read_scope}
+            if args.enable_knowledge_search:
+                # Same scope instance: every search result is readable by read_file.
+                try:
+                    index = KnowledgeIndex(default_knowledge_db_path(), read_scope)
+                except KnowledgeIndexUnavailable as exc:
+                    parser.error(f"--enable-knowledge-search: {exc}")
+                except (KnowledgeIndexError, sqlite3.Error, OSError):
+                    parser.error(
+                        "--enable-knowledge-search: the knowledge index could not be opened"
+                    )
+                allowed_ids += (SEARCH_KNOWLEDGE_TOOL_ID,)
+                dependencies[SEARCH_KNOWLEDGE_TOOL_ID] = {"index": index}
         tools, executor = build_session_tools(
             registry,
             worker=DEFAULT_WORKER,

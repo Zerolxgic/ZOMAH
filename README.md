@@ -84,7 +84,10 @@ src/zomah/console/operator.py        operator identity + injected capability dep
 tests/test_user_boundary.py          operator boundary tests
 tests/test_console_project.py        /project capability read path tests
 tests/test_console_session.py        console session-state ownership tests
-src/zomah/console/attachments.py     in-memory ImageAttachment + limits
+src/zomah/attachments.py             in-memory ImageAttachment + limits (shared)
+src/zomah/model_runtime.py           provider-neutral model runtime contract
+src/zomah/worker_session.py          ephemeral WorkerSession over a ModelRuntime
+tests/test_worker_session.py         worker session contract tests (fake runtime)
 src/zomah/console/clipboard.py       wl-paste clipboard image source
 tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
 tests/test_console_attachments.py    composer attachment behavior tests
@@ -129,6 +132,10 @@ Any submission starting with `/` is routed as a command (`src/zomah/console/rout
 ### Clipboard images
 
 Alt+V attaches the clipboard image (PNG, JPEG, or WebP) to the composer draft. Ctrl+Shift+V triggers the same action on a best-effort basis, only if the terminal passes the key through for an image-only clipboard; on the verified Ghostty 1.3.1 setup it does not, so Alt+V is the dependable key. Text paste is unchanged. Images are read from the Wayland clipboard with `wl-paste` (wl-clipboard), off the UI loop, with fixed arguments, a 5 s timeout, and a 10 MiB per-image limit; a draft holds at most 4 images. Attached images appear in a strip above the composer; Backspace in an empty composer removes the most recent one. Images live only in the draft: submission sends them with the text to the transcript as metadata only, and they are never written to disk. No model receives them yet.
+
+## Worker session (T1a contracts)
+
+`zomah.model_runtime` defines a provider-neutral, async completion contract: `SystemMessage`, `UserMessage` (text plus in-memory `ImageAttachment`s, never pre-encoded), `AssistantMessage`, `ModelRequest`, `ModelResponse`, runtime-reported `TokenUsage`, the `ModelRuntime` protocol, and one operator-safe `ModelRuntimeError`. `zomah.worker_session.WorkerSession` holds ephemeral, in-memory session state over an injected runtime: committed history, worker/model identity, an optional configured context limit, the latest reported usage, and an (empty) tool snapshot. `send()` commits the user turn and reply only on success; a runtime failure commits nothing; a concurrent `send()` raises `SessionBusyError`. Context usage comes only from runtime reports and is `None` when unreported. No model runtime adapter, tools, persistence, or console wiring exists yet.
 
 ## Operator capability boundary
 

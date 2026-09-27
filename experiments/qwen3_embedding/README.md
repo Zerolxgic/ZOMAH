@@ -12,7 +12,9 @@ It compares document ranking only. Within-document localization, chunking, reran
 benchmark.json            committed evaluation manifest (30 cases, 4 categories)
 run_benchmark.py          T3a CLI: download, run, write results.json + report.md
 run_fusion.py             T3b CLI: RRF over a T3a results.json (standard library only)
+run_candidate_audit.py    T3c CLI: candidate union + ambiguity audit (standard library only)
 T3A-LIVE-RESULTS.md       summary of the first real-machine T3a run
+T3B-LIVE-RESULTS.md       summary of the real-machine T3b fusion run
 requirements.txt          experiment-only dependencies (verified versions)
 embedding_bench/
   manifest.py             manifest validation + evidence-anchor drift checks
@@ -24,6 +26,8 @@ embedding_bench/
   qwen.py                 the real embedder (the only module importing torch)
   fusion.py               T3b: T3a input validation, RRF, fused metrics
   fusion_report.py        T3b Markdown report + terminal summary
+  candidates.py           T3c: candidate union, resolution classes, audit
+  candidates_report.py    T3c Markdown report + terminal summary
 tests/                    pure-logic tests (no torch, no model download)
 ```
 
@@ -108,4 +112,20 @@ It writes `results.json` and `report.md` (refusing to write into the T3a run's o
 **Frozen input.** Before fusing, the T3a artifact must contain every case's full lexical and semantic rankings (the semantic one covering the whole corpus), and its stored ranks, metrics and agreement buckets must follow from those rankings. The cases must carry the manifest's labels unchanged, with any unscored manifest case listed as T3a drift. Missing or inconsistent data is reported and nothing is fused or regenerated.
 
 **Report.** Top-1 / top-3 / MRR for all three systems overall and per category; which T3a lexical-only, semantic-only and both-correct top-1 wins RRF keeps; which both-wrong cases it recovers; where the expected document's fused rank is better or worse than both inputs; top-3 losses against each input; ties decided by path; the RRF top-3 for every RRF miss; and every query's three ranks. The top-1 union of the two inputs is shown as an oracle reference, not a system result.
+
+## T3c: candidate union and ambiguity audit
+
+T3c asks how often the correct document is in a small candidate set built from both retrievers, and how many cases simple deterministic rules cannot resolve. It reads the same T3a `results.json`, uses the standard library only, and never loads a model:
+
+```bash
+python experiments/qwen3_embedding/run_candidate_audit.py \
+  --input ~/.local/share/zomah/experiments/qwen3-embedding/run-1/results.json \
+  --output-dir ~/.local/share/zomah/experiments/qwen3-embedding/run-1-candidate-audit
+```
+
+**Candidate set.** `union(lexical top 3, semantic top 3)`, deduplicated by path. Each candidate keeps its rank in both full rankings; a document a ranking never returned counts as worse than any rank.
+
+**Resolution classes** (from the rankings alone, never the labels): AGREEMENT when both retrievers put the same document first; DOMINANCE when, otherwise, exactly one candidate is ranked at least as well as every other candidate on both rankings and strictly better on one; AMBIGUOUS when neither applies. Because the union always holds both first places, unique dominance can only differ from agreement when one ranking is empty. The report says so, and shows the non-dominated candidates (the Pareto front) as the smallest set a judge would need.
+
+**Evaluation** (labels read only here): candidate recall for lexical top 3, semantic top 3 and the union, overall and by category; candidate-set sizes; accuracy of deterministic resolutions; every ambiguous case with its candidates' ranks; and every retrieval failure, meaning the expected document is not a candidate. Retrieval failures are kept separate from ambiguous cases whose answer is a candidate, which are the only scope a bounded judge could address. Lexical #1, semantic #1 and RRF (k = 60) are reported on the ambiguous cases as labelled diagnostics, never as the resolver.
 

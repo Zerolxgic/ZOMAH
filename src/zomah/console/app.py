@@ -54,7 +54,11 @@ from zomah.model_tools import (
     build_session_tools,
 )
 from zomah.model_runtime import ModelRuntimeError
-from zomah.worker_session import SessionBusyError, WorkerSession
+from zomah.worker_session import (
+    DEFAULT_TOOL_RESULT_BUDGET_CHARS,
+    SessionBusyError,
+    WorkerSession,
+)
 
 DEFAULT_WORKER = "elyria"
 DISCONNECTED_NOTICE = "No model connected. Messages are shown here only; type / for commands."
@@ -690,6 +694,15 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
         help=f"LM Studio OpenAI-compatible base URL (default: {DEFAULT_BASE_URL})",
     )
     parser.add_argument(
+        "--tool-result-budget-chars",
+        type=int,
+        metavar="N",
+        help=(
+            "combined characters of tool results allowed per model turn "
+            f"(default: {DEFAULT_TOOL_RESULT_BUDGET_CHARS}; not tokens)"
+        ),
+    )
+    parser.add_argument(
         "--read-root",
         dest="read_roots",
         action="append",
@@ -705,6 +718,11 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
         parser.error("--context-limit requires --model")
     if args.model is None and args.read_roots:
         parser.error("--read-root requires --model")
+    budget = args.tool_result_budget_chars
+    if args.model is None and budget is not None:
+        parser.error("--tool-result-budget-chars requires --model")
+    if budget is not None and budget <= 0:
+        parser.error("--tool-result-budget-chars must be positive")
     if args.context_limit is not None and args.context_limit <= 0:
         parser.error("--context-limit must be positive")
     # Long-lived harness dependencies, built once and shared: the human
@@ -741,6 +759,9 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
             context_limit=args.context_limit,
             tools=tools,
             tool_executor=executor,
+            tool_result_budget_chars=(
+                DEFAULT_TOOL_RESULT_BUDGET_CHARS if budget is None else budget
+            ),
         )
     return OperatorConsole(
         ConsoleStatus(active_project_id=args.project_id),

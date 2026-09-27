@@ -95,6 +95,7 @@ src/zomah/model_tools.py             capability → model tool bridge + executor
 tests/test_model_tools.py            tool exposure policy + executor tests
 tests/test_worker_session_tools.py   WorkerSession tool-loop tests
 tests/test_read_file_tool.py         read_file tool + dependency routing tests
+tests/test_worker_session_budget.py  per-turn tool-result budget tests
 src/zomah/console/clipboard.py       wl-paste clipboard image source
 tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
 tests/test_console_attachments.py    composer attachment behavior tests
@@ -176,6 +177,10 @@ zomah-console --project zomah --model qwen/qwen3.5-9b --context-limit 16384 \
 `read_file` is registered (READ, VERIFIED, user and agent exposed) but is only visible to a model session when at least one `--read-root` is configured; otherwise the session keeps exactly `get_project_state` (`Tools: 1`). Roots are explicit (no default to cwd, `$HOME`, `/`, or the repository), resolved once at startup into a `ReadScope`, and invalid roots fail startup. `--read-root` requires `--model`. The existing scope rules apply unchanged: absolute paths only, canonicalized before containment, no `..` or symlink escape, regular UTF-8 files only, bounded output with `next_start_line` continuation. Denials and file errors return to the model as capability-envelope tool results. Traces record `elyria | read_file | <outcome> | <path>`, never file contents.
 
 Each `CapabilityDefinition` declares the harness dependencies its handler needs (`get_project_state`: `repository`; `read_file`: `scope`). The model tool executor takes an explicit `{capability_id: {name: object}}` map, checks every entry against those declarations when the session is built (missing, extra, or stray entries fail construction), and passes each call only its own capability's entry.
+
+## Per-turn tool-result budget (T2d)
+
+`WorkerSession` bounds the combined size of tool results in one operator turn: the sum of `len()` over every tool result string (success envelopes, error envelopes, and `tool_not_available` results alike) may not exceed `tool_result_budget_chars` (default 32768, `--tool-result-budget-chars N`, requires `--model`). This is a deterministic local character bound, not a token estimate, and it is configured independently of `--context-limit`. The counter starts at zero each turn and is checked after a tool returns and before its result is appended; a result that would exceed the budget is never truncated or appended. Instead the turn stops with `Tool results exceeded this session's per-turn budget; the turn was stopped.`, no further completion is made, and nothing from the turn is committed. A READ tool that already ran stays traced. The existing round and call-count limits still apply independently.
 
 ## Operator capability boundary
 

@@ -12,7 +12,12 @@ with tool calls, each call whose name is in the session snapshot is passed to
 the injected ``ToolExecutor``, the results are appended to the candidate
 conversation, and the model is asked again, until it gives a final answer.
 The loop is bounded by ``MAX_TOOL_ROUNDS`` and the per-response / per-turn
-tool-call limits.
+tool-call limits, and independently by a per-turn tool-result budget: the
+combined ``len()`` of every tool result string in one turn may not exceed
+``tool_result_budget_chars``. That is a deterministic local character bound,
+not an estimate of model tokens, and it is configured separately from the
+context limit. A result that would exceed it is never truncated or appended;
+the turn stops instead.
 
 Concurrency: one turn at a time. A ``send`` issued while another is in flight
 raises ``SessionBusyError`` immediately instead of queueing. The session is
@@ -22,7 +27,10 @@ Failure: a turn is committed only once the model gives a final answer. If any
 completion fails, a bound is exceeded, or the turn is cancelled, nothing from
 the candidate turn (user message, tool calls, tool results) is committed and
 previously reported usage is left unchanged. Tools that already ran are not
-undone; this is safe only while session tools are read-only.
+undone (a READ tool whose result is then rejected by the budget stays traced);
+this is safe only while session tools are read-only. CHANGE/EXECUTE tools will
+need additional lifecycle semantics because their side effects cannot be
+rolled back.
 """
 
 from __future__ import annotations
@@ -53,6 +61,8 @@ MAX_TOOL_ROUNDS = 4
 # Tool calls accepted from a single model response, and across one turn.
 MAX_TOOL_CALLS_PER_RESPONSE = 4
 MAX_TOOL_CALLS_PER_TURN = 8
+# Combined characters of all tool results in one operator turn (not tokens).
+DEFAULT_TOOL_RESULT_BUDGET_CHARS = 32768
 
 SessionMessage = UserMessage | AssistantMessage | ToolResultMessage
 
@@ -110,6 +120,7 @@ class WorkerSession:
         context_limit: int | None = None,
         tools: Sequence[ToolDefinition] = (),
         tool_executor: ToolExecutor | None = None,
+        tool_result_budget_chars: int = DEFAULT_TOOL_RESULT_BUDGET_CHARS,
     ) -> None:
         if not worker.strip():
             raise ValueError("worker identity must be non-empty")
@@ -117,6 +128,12 @@ class WorkerSession:
             raise ValueError("model identity must be non-empty")
         if context_limit is not None and context_limit <= 0:
             raise ValueError("context limit must be positive")
+        if (
+            not isinstance(tool_result_budget_chars, int)
+            or isinstance(tool_result_budget_chars, bool)
+            or tool_result_budget_chars <= 0
+        ):
+            raise ValueError("tool result budget must be a positive number of characters")
         tools = tuple(tools)
         names = [tool.name for tool in tools]
         if len(names) != len(set(names)):
@@ -131,6 +148,7 @@ class WorkerSession:
         self._tools = tools
         self._tool_names = frozenset(names)
         self._executor = tool_executor
+        self._tool_result_budget_chars = tool_result_budget_chars
         self._history: list[SessionMessage] = []
         self._usage: TokenUsage | None = None
         self._busy = False
@@ -176,6 +194,12 @@ class WorkerSession:
         return self._tools
 
     @property
+    def tool_result_budget_chars(self) -> int:
+        """Per-turn limit on combined tool-result characters; not a token count."""
+
+        return self._tool_result_budget_chars
+
+    @property
     def history(self) -> tuple[SessionMessage, ...]:
         """Committed conversation, oldest first (a snapshot)."""
 
@@ -204,6 +228,7 @@ class WorkerSession:
             candidate: list[SessionMessage] = [user]
             rounds = 0
             calls_this_turn = 0
+            result_chars = 0
             while True:
                 response = await self._complete(candidate)
                 message = response.message
@@ -233,6 +258,13 @@ class WorkerSession:
                 candidate.append(message)
                 for call in message.tool_calls:
                     content = await self._run_tool(call)
+                    # Accept a complete result or stop; never truncate here.
+                    if result_chars + len(content) > self._tool_result_budget_chars:
+                        raise ModelRuntimeError(
+                            "Tool results exceeded this session's per-turn budget; "
+                            "the turn was stopped."
+                        )
+                    result_chars += len(content)
                     candidate.append(ToolResultMessage(call_id=call.id, content=content))
         finally:
             self._busy = False

@@ -1,0 +1,7 @@
+# T3a experiment environment only; never add these to ZOMAH's pyproject.toml.
+# Install the CPU-only torch wheel first (see README.md), then this file,
+# then ZOMAH itself (`pip install -e .`) for the lexical baseline.
+# Versions are the ones this experiment was verified against.
+torch==2.14.0
+transformers==5.17.0
+sentence-transformers==5.7.0

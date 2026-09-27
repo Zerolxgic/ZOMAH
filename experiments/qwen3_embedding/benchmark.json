@@ -1,0 +1,251 @@
+{
+  "description": "T3a document-ranking benchmark over ZOMAH's own .md/.txt/.rst documentation. Each case names the one document that holds the evidence; evidence_anchor is a verbatim (whitespace-normalized) quote from it and is checked before scoring. Several exact/paraphrase cases share the same evidence so wording is the only variable between them.",
+  "categories": {
+    "exact": "Query reuses the source document's own distinctive terms.",
+    "paraphrase": "Asks for one specific stated fact, with the source's distinctive terms replaced by everyday wording.",
+    "conceptual": "Asks about a purpose, reason, or kind of thing using synonyms or broader concepts the passage never uses.",
+    "distractor": "Query vocabulary is shared by several documents on nearby topics; only the expected document holds the specific evidence."
+  },
+  "cases": [
+    {
+      "id": "ex-primitives",
+      "category": "exact",
+      "query": "What are the six conceptual primitives that ZOMAH v0 begins with?",
+      "expected_path": "PROJECT.md",
+      "evidence_anchor": "ZOMAH v0 begins with six conceptual primitives:",
+      "rationale": "Only PROJECT.md lists the core domain objects (Task, Context, Worker, RunState, Trace, Verification)."
+    },
+    {
+      "id": "ex-migrations",
+      "category": "exact",
+      "query": "Does schema versioning use PRAGMA user_version, or is a separate migration framework required?",
+      "expected_path": "docs/PROJECT-STATE-PERSISTENCE.md",
+      "evidence_anchor": "A separate migration framework is not required for v0.",
+      "rationale": "Only the persistence contract names PRAGMA user_version; ADR-002 mentions migrations only as a cost."
+    },
+    {
+      "id": "ex-validation-echo",
+      "category": "exact",
+      "query": "Do validation details echo rejected input values back to the model?",
+      "expected_path": "docs/decisions/ADR-005-model-facing-error-envelope.md",
+      "evidence_anchor": "Validation details identify fields and error types but do not echo rejected input values.",
+      "rationale": "Only ADR-005 states the no-echo rule for validation details."
+    },
+    {
+      "id": "pa-validation-echo",
+      "category": "paraphrase",
+      "query": "When a call is refused because its arguments were malformed, does the reply repeat what the caller originally sent?",
+      "expected_path": "docs/decisions/ADR-005-model-facing-error-envelope.md",
+      "evidence_anchor": "Validation details identify fields and error types but do not echo rejected input values.",
+      "rationale": "Same evidence as ex-validation-echo, reworded."
+    },
+    {
+      "id": "ex-clipboard-limits",
+      "category": "exact",
+      "query": "What is the per-image limit for clipboard images attached with Alt+V, and how many images can a draft hold?",
+      "expected_path": "README.md",
+      "evidence_anchor": "a 10 MiB per-image limit; a draft holds at most 4 images",
+      "rationale": "Clipboard image limits are documented only in README.md."
+    },
+    {
+      "id": "pa-clipboard-limits",
+      "category": "paraphrase",
+      "query": "How many pictures can I stick onto one message before sending it, and how big can each one be?",
+      "expected_path": "README.md",
+      "evidence_anchor": "a 10 MiB per-image limit; a draft holds at most 4 images",
+      "rationale": "Same evidence as ex-clipboard-limits, reworded."
+    },
+    {
+      "id": "ex-fingerprint",
+      "category": "exact",
+      "query": "Is each approved candidate file fingerprinted using modification time and size so unchanged documents are not re-indexed?",
+      "expected_path": "docs/decisions/ADR-007-automatic-knowledge-index-freshness.md",
+      "evidence_anchor": "Each approved candidate file is fingerprinted using modification time and size; unchanged documents are not re-read or re-indexed.",
+      "rationale": "README and ARCHITECTURE say the refresh is incremental; only ADR-007 says how unchanged files are detected."
+    },
+    {
+      "id": "pa-fingerprint",
+      "category": "paraphrase",
+      "query": "How does search know a note hasn't been edited since last time, so it can skip reading it again?",
+      "expected_path": "docs/decisions/ADR-007-automatic-knowledge-index-freshness.md",
+      "evidence_anchor": "Each approved candidate file is fingerprinted using modification time and size; unchanged documents are not re-read or re-indexed.",
+      "rationale": "Same evidence as ex-fingerprint, reworded."
+    },
+    {
+      "id": "ex-protected-executable",
+      "category": "exact",
+      "query": "May the working directory of a registered automation stay writable, or is only the approved executable protected?",
+      "expected_path": "docs/decisions/ADR-004-registered-script-integrity.md",
+      "evidence_anchor": "The protected object is the approved executable itself.",
+      "rationale": "README and ARCHITECTURE describe digest checks; only ADR-004 addresses the writable working directory."
+    },
+    {
+      "id": "pa-protected-executable",
+      "category": "paraphrase",
+      "query": "If an approved script works inside some folder, is that folder locked down too, or just the program file?",
+      "expected_path": "docs/decisions/ADR-004-registered-script-integrity.md",
+      "evidence_anchor": "The protected object is the approved executable itself.",
+      "rationale": "Same evidence as ex-protected-executable, reworded."
+    },
+    {
+      "id": "ex-character-bound",
+      "category": "exact",
+      "query": "Is tool_result_budget_chars a deterministic character bound or a token estimate?",
+      "expected_path": "README.md",
+      "evidence_anchor": "This is a deterministic local character bound, not a token estimate",
+      "rationale": "The per-turn tool-result budget is documented only in README.md (T2d)."
+    },
+    {
+      "id": "pa-character-bound",
+      "category": "paraphrase",
+      "query": "Is the cap on how much tool output one reply can pile up measured in model tokens or in something simpler?",
+      "expected_path": "README.md",
+      "evidence_anchor": "This is a deterministic local character bound, not a token estimate",
+      "rationale": "Same evidence as ex-character-bound, reworded."
+    },
+    {
+      "id": "pa-newline-fallback",
+      "category": "paraphrase",
+      "query": "If my terminal can't tell a modified Return key apart from a plain one, how do I start a new line while typing a message?",
+      "expected_path": "README.md",
+      "evidence_anchor": "Ctrl+J is the compatibility fallback",
+      "rationale": "ARCHITECTURE lists Shift+Enter as required composer behavior; only README gives the fallback for terminals without the kitty keyboard protocol."
+    },
+    {
+      "id": "pa-notes-vault",
+      "category": "paraphrase",
+      "query": "Can the generated project status page be saved straight into my personal note-taking app?",
+      "expected_path": "docs/PROJECT-STATE-PERSISTENCE.md",
+      "evidence_anchor": "The user may later configure an Obsidian/Vault destination without changing the persistence contract.",
+      "rationale": "README gives the current exports/ location of the mirror and ADR-002 mentions future knowledge-vault integration in passing; only the persistence contract says a notes-vault destination can be configured."
+    },
+    {
+      "id": "pa-archive-not-delete",
+      "category": "paraphrase",
+      "query": "When a project is finished and no longer needed, does it get wiped from the database?",
+      "expected_path": "docs/PROJECT-STATE-PERSISTENCE.md",
+      "evidence_anchor": "Projects transition to `archived` rather than being deleted.",
+      "rationale": "ARCHITECTURE lists 'archived' as a status value; only the persistence contract's deletion policy says projects are archived instead of deleted."
+    },
+    {
+      "id": "pa-third-party-runtime",
+      "category": "paraphrase",
+      "query": "Why wasn't the whole system built on top of an existing third-party agent runtime?",
+      "expected_path": "docs/decisions/ADR-001-minimal-control-plane.md",
+      "evidence_anchor": "ZOMAH's durable state and control boundary should not depend on OpenClaw's continued presence.",
+      "rationale": "PROJECT and ARCHITECTURE mention OpenClaw only as something to integrate with; only ADR-001 records rejecting it as the core runtime and why."
+    },
+    {
+      "id": "pa-project-discovery",
+      "category": "paraphrase",
+      "query": "Can the assistant find out which projects exist without being told an identifier first?",
+      "expected_path": "docs/ZOMAH-V0-CAPABILITY-AUDIT.md",
+      "evidence_anchor": "`get_project_state` requires a known project ID.",
+      "rationale": "Only the capability audit discusses project discovery (a deferred watch item)."
+    },
+    {
+      "id": "co-inbox-schedule",
+      "category": "conceptual",
+      "query": "Will the assistant look after my inbox or put appointments in my schedule?",
+      "expected_path": "PROJECT.md",
+      "evidence_anchor": "- email integration - calendar integration",
+      "rationale": "Only PROJECT.md's explicit non-goals rule out email and calendar integration."
+    },
+    {
+      "id": "co-small-toolset-debugging",
+      "category": "conceptual",
+      "query": "Why does keeping the set of tools tiny make it easier to debug when something goes wrong?",
+      "expected_path": "docs/decisions/ADR-001-minimal-control-plane.md",
+      "evidence_anchor": "Failures are easier to attribute to the model, context, tool, or harness.",
+      "rationale": "Only ADR-001's consequences connect a narrow tool surface to attributing failures."
+    },
+    {
+      "id": "co-config-file-state",
+      "category": "conceptual",
+      "query": "Why not just keep the project record in a structured config-style file on disk instead of a database?",
+      "expected_path": "docs/decisions/ADR-002-sqlite-canonical-project-state.md",
+      "evidence_anchor": "They would be simple initially but require ZOMAH to build its own locking, transactional update behavior, indexing, and relationship handling as the system grows.",
+      "rationale": "Only ADR-002's alternatives weigh JSON/YAML files against SQLite; the persistence contract states the rule without the comparison."
+    },
+    {
+      "id": "co-machine-inspection-kinds",
+      "category": "conceptual",
+      "query": "What kinds of live machine information is the assistant meant to look at in a structured way rather than through a general shell?",
+      "expected_path": "ARCHITECTURE.md",
+      "evidence_anchor": "This is intentionally preferred over unrestricted shell inspection.",
+      "rationale": "README only says 'explicit Linux system domains', and the audit and ADR-006 mention process/service/mount entries only as output budgets; ARCHITECTURE lists the inspect_system domains as the alternative to shell inspection."
+    },
+    {
+      "id": "co-decision-window-order",
+      "category": "conceptual",
+      "query": "When there are too many past choices to show the assistant, which ones get shown first?",
+      "expected_path": "docs/decisions/ADR-006-model-sized-output-budgets.md",
+      "evidence_anchor": "currently active lifecycle states (`proposed` and `accepted`) are prioritized before terminal historical states",
+      "rationale": "ARCHITECTURE and README mention a bounded decision window; only ADR-006 says which decisions are prioritized."
+    },
+    {
+      "id": "di-stdout-budget",
+      "category": "distractor",
+      "query": "What is the current stdout limit for run_script results returned to the model?",
+      "expected_path": "docs/decisions/ADR-006-model-sized-output-budgets.md",
+      "evidence_anchor": "stdout: 16 KiB",
+      "rationale": "The capability audit quotes the older 64 KiB stdout limit it asked to reduce; ADR-006 holds the adopted budget."
+    },
+    {
+      "id": "di-audit-test-baseline",
+      "category": "distractor",
+      "query": "How many passing tests did the capability audit record as its baseline?",
+      "expected_path": "docs/ZOMAH-V0-CAPABILITY-AUDIT.md",
+      "evidence_anchor": "83 passing tests",
+      "rationale": "PROJECT.md reports a later baseline (121 passing tests); only the audit records its own."
+    },
+    {
+      "id": "di-event-log",
+      "category": "distractor",
+      "query": "Why not store every state change as an event log and rebuild the current state from it?",
+      "expected_path": "docs/decisions/ADR-002-sqlite-canonical-project-state.md",
+      "evidence_anchor": "ZOMAH needs current truth plus useful provenance, not a complete event-sourced architecture.",
+      "rationale": "The persistence contract lists event sourcing as a non-goal and ARCHITECTURE/PROJECT say history belongs elsewhere; only ADR-002 gives the reason for rejecting it."
+    },
+    {
+      "id": "di-embeddings-verdict",
+      "category": "distractor",
+      "query": "Did the capability review conclude that embeddings were needed for knowledge retrieval?",
+      "expected_path": "docs/ZOMAH-V0-CAPABILITY-AUDIT.md",
+      "evidence_anchor": "SQLite FTS5 lexical retrieval is working well and is sufficient for v0. Embeddings are not justified.",
+      "rationale": "README, ARCHITECTURE and PROJECT discuss the planned embedding experiment; only the audit records the review's verdict."
+    },
+    {
+      "id": "di-refresh-scaling",
+      "category": "distractor",
+      "query": "What could be done later if scanning every knowledge root before each search becomes too slow?",
+      "expected_path": "docs/decisions/ADR-007-automatic-knowledge-index-freshness.md",
+      "evidence_anchor": "ZOMAH may later add filesystem notifications, dirty-path tracking, or another internal optimization",
+      "rationale": "The audit says the refresh may be optimized later without naming how; only ADR-007 names the options."
+    },
+    {
+      "id": "di-reranker-condition",
+      "category": "distractor",
+      "query": "Under what condition would a reranker be introduced into retrieval?",
+      "expected_path": "ARCHITECTURE.md",
+      "evidence_anchor": "It should be introduced only if evaluation demonstrates a retrieval failure that it has a clear job to solve.",
+      "rationale": "PROJECT.md mentions evaluating embeddings before a reranker; only ARCHITECTURE states the condition for adding one."
+    },
+    {
+      "id": "di-trace-location",
+      "category": "distractor",
+      "query": "Where on disk are model capability traces stored?",
+      "expected_path": "README.md",
+      "evidence_anchor": "`$XDG_DATA_HOME/zomah/trace.db`",
+      "rationale": "ADR-008 and ARCHITECTURE describe the trace contents and the persistence contract gives the zomah.db path; only README gives the trace.db location."
+    },
+    {
+      "id": "di-proposal-fields",
+      "category": "distractor",
+      "query": "Which fields may a model-originated decision proposal contain?",
+      "expected_path": "docs/decisions/ADR-003-state-provenance-and-decision-authority.md",
+      "evidence_anchor": "proposals contain only an ID, statement, and rationale;",
+      "rationale": "ARCHITECTURE, README and the audit say model decisions are proposals and what they cannot set; only ADR-003 lists the fields a proposal contains."
+    }
+  ]
+}

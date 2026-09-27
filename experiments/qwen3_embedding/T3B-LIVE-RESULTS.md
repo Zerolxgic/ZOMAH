@@ -45,7 +45,9 @@ Equal-weight RRF improves overall Top-1 only modestly over either retriever alon
 
 This is an important structural result, not just a weak aggregate score. The two retrieval systems remain strongly complementary, but this particular deterministic fusion rule does not exploit that complementarity symmetrically.
 
-The observed pattern is consistent with the asymmetric ranking coverage in T3a: lexical retrieval may omit documents with no term match, while semantic retrieval ranks the full corpus. A semantically correct document that is absent from the lexical ranking receives only one RRF contribution, while an incorrect lexical hit can receive contributions from both rankings. Equal-weight RRF therefore has a built-in tendency to preserve lexical candidates when lexical returns them.
+### Correction after T3c audit
+
+The original write-up attributed the lost semantic-only wins mainly to lexical retrieval omitting the correct document. That was not the explanation for these eight live cases. The T3a artifact shows the correct documents were present in the lexical rankings, generally at weaker ranks (roughly `#4` through `#13`). Equal-weight RRF at `k = 60` behaves approximately like combining rank advantages: the wrong lexical #1 often also had enough semantic support to outrank the semantically correct document, whose lexical position was much weaker. The observed loss is therefore primarily a **relative-rank geometry** effect, not an absence-from-lexical effect. Lexical retrieval can still omit unmatched documents in principle, but that was not the cause of these eight semantic-only losses.
 
 RRF still demonstrates useful deterministic behavior:
 

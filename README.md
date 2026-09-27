@@ -90,6 +90,7 @@ src/zomah/worker_session.py          ephemeral WorkerSession over a ModelRuntime
 tests/test_worker_session.py         worker session contract tests (fake runtime)
 src/zomah/lmstudio.py                LM Studio ModelRuntime adapter
 tests/test_lmstudio_runtime.py       adapter tests against a local fake HTTP server
+tests/test_console_worker.py         console ↔ WorkerSession wiring tests
 src/zomah/console/clipboard.py       wl-paste clipboard image source
 tests/test_console_clipboard.py      attachment validation + wl-paste adapter tests
 tests/test_console_attachments.py    composer attachment behavior tests
@@ -146,6 +147,14 @@ Alt+V attaches the clipboard image (PNG, JPEG, or WebP) to the composer draft. C
 ```bash
 python examples/lmstudio_turn.py --model <exact id from GET /v1/models> "Say hello in one sentence."
 ```
+
+## Live worker session in the console (T1c)
+
+```bash
+zomah-console --model qwen/qwen3.5-9b --context-limit 16384 [--lmstudio-base-url http://127.0.0.1:1234/v1]
+```
+
+With `--model`, the console builds one `WorkerSession` over `LMStudioRuntime` at startup (worker `elyria`, no system prompt yet); without it the console stays disconnected and only echoes messages locally. Ordinary messages (text and image attachments) go to the session; slash commands always stay local and never reach the model. Each turn shows the operator entry, then a pending `<worker> is thinking…` entry that is replaced by the reply or a safe error. One model turn runs at a time: a second ordinary message while a turn is in flight is not sent or queued, and is put back in the composer. The header and `/status` mirror the session's model, configured context limit, runtime-reported context usage (`unavailable` until reported), and session tool count (`0`). The session owns model history; the transcript is only UI history, and failed turns never enter model history.
 
 ## Operator capability boundary
 

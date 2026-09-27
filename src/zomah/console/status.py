@@ -58,10 +58,12 @@ def project_display(status: ConsoleStatus) -> str:
 def status_values(status: ConsoleStatus) -> dict[str, str]:
     """Display values keyed like ``STATUS_LABELS``, with explicit placeholders."""
 
-    if status.context_used is None or status.context_limit is None:
+    if status.context_used is None and status.context_limit is None:
         context = PLACEHOLDER_UNAVAILABLE
     else:
-        context = f"{status.context_used} / {status.context_limit}"
+        used = PLACEHOLDER_UNAVAILABLE if status.context_used is None else status.context_used
+        limit = PLACEHOLDER_NOT_SET if status.context_limit is None else status.context_limit
+        context = f"{used} / {limit}"
     return {
         "project": project_display(status),
         "state": status.zomah_state or PLACEHOLDER_NOT_CONNECTED,

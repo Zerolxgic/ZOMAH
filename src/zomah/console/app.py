@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from dataclasses import replace
 import getpass
 from collections.abc import Sequence
 from typing import Any
@@ -45,6 +46,24 @@ from zomah.console.commands import CommandContext, CommandResult
 from zomah.console.operator import OperatorAccess, build_default_operator_access
 from zomah.console.routing import CommandSubmission, parse_submission, run_command
 from zomah.console.status import STATUS_LABELS, ConsoleStatus, status_values
+from zomah.lmstudio import DEFAULT_BASE_URL, LMStudioRuntime
+from zomah.model_runtime import ModelRuntimeError
+from zomah.worker_session import SessionBusyError, WorkerSession
+
+DEFAULT_WORKER = "elyria"
+DISCONNECTED_NOTICE = "No model connected. Messages are shown here only; type / for commands."
+
+
+def with_session_status(status: ConsoleStatus, session: WorkerSession) -> ConsoleStatus:
+    """Copy live session metadata into console status, preserving other fields."""
+
+    return replace(
+        status,
+        model=session.model,
+        tools_available=len(session.tools),
+        context_used=session.context_used,
+        context_limit=session.context_limit,
+    )
 
 class CommandSuggestions(OptionList):
     """Slash-command discovery list. Never focused; the composer drives it."""
@@ -312,6 +331,16 @@ class OperatorConsole(App[None]):
         border-left: outer $accent;
         padding-left: 1;
     }
+    .assistant {
+        border-left: outer $success;
+        padding-left: 1;
+    }
+    .assistant.error {
+        border-left: outer $error;
+    }
+    .assistant.pending {
+        color: $text-muted;
+    }
     .result.error {
         border-left: outer $error;
     }
@@ -346,15 +375,27 @@ class OperatorConsole(App[None]):
         *,
         operator_access: OperatorAccess | None = None,
         clipboard: ClipboardImageSource | None = None,
+        worker_session: WorkerSession | None = None,
     ) -> None:
         super().__init__()
         self._status = status or ConsoleStatus()
+        # The session owns the model conversation; the console only renders
+        # it and mirrors its metadata into status.
+        self._session = worker_session
+        self._turn_in_flight = False
+        if worker_session is not None:
+            self._status = with_session_status(self._status, worker_session)
         self._commands = commands or default_command_registry()
         # Capabilities are invoked only through the user boundary, using the
         # injected operator access; /tools reads registry metadata only.
         self._capabilities = capabilities or default_capability_registry()
         self._operator_access = operator_access
         self._clipboard = clipboard or WaylandClipboardImageSource()
+
+    def _startup_notice(self) -> str:
+        if self._session is None:
+            return DISCONNECTED_NOTICE
+        return f"Model session configured: {self._session.model}. Type / for commands."
 
     @property
     def status(self) -> ConsoleStatus:
@@ -377,7 +418,7 @@ class OperatorConsole(App[None]):
         with Vertical(id="work"):
             yield VerticalScroll(
                 Static(
-                    "No model connected. Messages are shown here only; type / for commands.",
+                    self._startup_notice(),
                     classes="entry notice",
                 ),
                 id="transcript",
@@ -418,19 +459,15 @@ class OperatorConsole(App[None]):
         self.query_one(Composer).focus()
 
     async def on_composer_submitted(self, message: Composer.Submitted) -> None:
-        # Text (not markup) so operator input and command output render literally.
-        # Only attachment metadata reaches the transcript; image bytes are
-        # dropped with the message once this handler returns.
-        lines = [message.text] if message.text.strip() else []
-        lines.extend(attachment.describe() for attachment in message.attachments)
-        body = "\n".join(lines)
-        entries = [
-            Static(
-                Text.assemble(("operator\n", "bold"), body),
-                classes="entry operator",
-            )
-        ]
         routed = parse_submission(message.text, self._commands)
+        if self._session is not None and not isinstance(routed, CommandSubmission):
+            if self._turn_in_flight:
+                self._reject_while_busy(message)
+                return
+            await self._start_model_turn(message)
+            return
+        # Text (not markup) so operator input and command output render literally.
+        entries = [self._operator_entry(message)]
         pending: Static | None = None
         if isinstance(routed, CommandSubmission) and message.attachments:
             entries.append(
@@ -461,6 +498,81 @@ class OperatorConsole(App[None]):
                 self._run_in_background(routed, self._command_context(), pending),
                 group="commands",
             )
+
+    @staticmethod
+    def _operator_entry(message: Composer.Submitted) -> Static:
+        # Only attachment metadata reaches the transcript; image bytes stay
+        # with the message (and the model session, when one is attached).
+        lines = [message.text] if message.text.strip() else []
+        lines.extend(attachment.describe() for attachment in message.attachments)
+        return Static(
+            Text.assemble(("operator\n", "bold"), "\n".join(lines)),
+            classes="entry operator",
+        )
+
+    def _reject_while_busy(self, message: Composer.Submitted) -> None:
+        """Refuse a second model turn; put the draft back instead of queueing it."""
+
+        composer = self.query_one(Composer)
+        if not composer.text and not composer.attachments:
+            composer.load_text(message.text)
+            for attachment in message.attachments:
+                composer.add_attachment(attachment)
+            composer.move_cursor(composer.document.end)
+        assert self._session is not None
+        self.notify(
+            f"{self._session.worker} is still answering. Your message was not sent.",
+            severity="warning",
+        )
+
+    async def _start_model_turn(self, message: Composer.Submitted) -> None:
+        assert self._session is not None
+        self._turn_in_flight = True
+        worker = self._session.worker
+        pending = Static(
+            Text.assemble((f"{worker}\n", "bold"), f"{worker} is thinking…"),
+            classes="entry assistant pending",
+        )
+        transcript = self.query_one("#transcript", VerticalScroll)
+        await transcript.mount_all([self._operator_entry(message), pending])
+        transcript.scroll_end(animate=False)
+        self.run_worker(
+            self._run_model_turn(message.text, message.attachments, pending),
+            group="model",
+        )
+
+    async def _run_model_turn(
+        self, text: str, attachments: tuple[ImageAttachment, ...], pending: Static
+    ) -> None:
+        """Await one session turn and render its outcome in the pending entry.
+
+        Runs on the UI loop; the runtime keeps blocking I/O off it. Failed
+        turns are not committed by the session, so only the transcript shows
+        them.
+        """
+
+        assert self._session is not None
+        worker = self._session.worker
+        error: str | None = None
+        reply = ""
+        try:
+            result = await self._session.send(text, attachments)
+            reply = result.assistant.text
+        except (ModelRuntimeError, SessionBusyError) as exc:
+            error = str(exc)
+        except Exception:  # noqa: BLE001 - never surface exception details.
+            self.log.error("model turn failed unexpectedly")
+            error = "The model turn failed unexpectedly."
+        finally:
+            self._turn_in_flight = False
+        if error is None:
+            pending.update(Text.assemble((f"{worker}\n", "bold"), reply))
+            pending.set_classes("entry assistant")
+        else:
+            pending.update(Text.assemble((f"{worker}\n", "bold"), error))
+            pending.set_classes("entry assistant error")
+        self.set_status(with_session_status(self._status, self._session))
+        self.query_one("#transcript", VerticalScroll).scroll_end(animate=False)
 
     def on_composer_image_paste_requested(
         self, message: Composer.ImagePasteRequested
@@ -557,10 +669,37 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
         default=getpass.getuser(),
         help="operator id recorded as operator:<id> in traces (default: OS user)",
     )
+    parser.add_argument(
+        "--model",
+        help="exact LM Studio model id for a live worker session (default: disconnected)",
+    )
+    parser.add_argument(
+        "--context-limit",
+        type=int,
+        help="configured context window in tokens (shown alongside reported usage)",
+    )
+    parser.add_argument(
+        "--lmstudio-base-url",
+        default=DEFAULT_BASE_URL,
+        help=f"LM Studio OpenAI-compatible base URL (default: {DEFAULT_BASE_URL})",
+    )
     args = parser.parse_args(argv)
+    if args.model is None and args.context_limit is not None:
+        parser.error("--context-limit requires --model")
+    if args.context_limit is not None and args.context_limit <= 0:
+        parser.error("--context-limit must be positive")
+    session = None
+    if args.model is not None:
+        session = WorkerSession(
+            LMStudioRuntime(base_url=args.lmstudio_base_url),
+            worker=DEFAULT_WORKER,
+            model=args.model,
+            context_limit=args.context_limit,
+        )
     return OperatorConsole(
         ConsoleStatus(active_project_id=args.project_id),
         operator_access=build_default_operator_access(args.operator),
+        worker_session=session,
     )
 
 

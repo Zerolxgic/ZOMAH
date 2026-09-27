@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import statistics
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Sequence
+from typing import TYPE_CHECKING, Iterable, Mapping, Sequence
 
-from embedding_bench.retrieval import RankedDoc
+if TYPE_CHECKING:  # typing only: keeps metrics importable without ZOMAH (T3b fusion)
+    from embedding_bench.retrieval import RankedDoc
 
 AGREEMENT_BUCKETS = (
     "both_correct",

@@ -10,7 +10,9 @@ It compares document ranking only. Within-document localization, chunking, reran
 
 ```text
 benchmark.json            committed evaluation manifest (30 cases, 4 categories)
-run_benchmark.py          CLI: download, run, write results.json + report.md
+run_benchmark.py          T3a CLI: download, run, write results.json + report.md
+run_fusion.py             T3b CLI: RRF over a T3a results.json (standard library only)
+T3A-LIVE-RESULTS.md       summary of the first real-machine T3a run
 requirements.txt          experiment-only dependencies (verified versions)
 embedding_bench/
   manifest.py             manifest validation + evidence-anchor drift checks
@@ -20,6 +22,8 @@ embedding_bench/
   runner.py               runs both sides, timings, memory -> JSON-ready dict
   report.py               Markdown report + terminal summary
   qwen.py                 the real embedder (the only module importing torch)
+  fusion.py               T3b: T3a input validation, RRF, fused metrics
+  fusion_report.py        T3b Markdown report + terminal summary
 tests/                    pure-logic tests (no torch, no model download)
 ```
 
@@ -86,3 +90,22 @@ Every query is scored against every document by dot product of unit vectors (cos
 Each case has `id`, `category`, `query`, `expected_path` (relative to the root), `evidence_anchor`, and a `rationale` saying why only that document holds the evidence. Before scoring, the expected file must still contain the anchor (whitespace-normalized, otherwise verbatim). If it does not, the case is reported as drift and not scored. Anchors that also appear in another document are flagged as weaker labels.
 
 Categories: `exact` (source terms), `paraphrase` (the same fact in everyday wording), `conceptual` (reasons or kinds of things in synonyms), `distractor` (vocabulary shared with nearby documents, evidence in one). Several exact and paraphrase cases share the same evidence, so wording is the only difference between them.
+
+## T3b: rank fusion over the frozen T3a rankings
+
+T3b asks how much of the lexical/semantic complementarity T3a measured an unsupervised, deterministic fusion rule recovers. It reads a T3a `results.json` and never loads a model or re-embeds anything; any Python 3.11+ with only the standard library runs it:
+
+```bash
+python experiments/qwen3_embedding/run_fusion.py \
+  --input ~/.local/share/zomah/experiments/qwen3-embedding/run-1/results.json \
+  --output-dir ~/.local/share/zomah/experiments/qwen3-embedding/run-1-fusion
+```
+
+It writes `results.json` and `report.md` (refusing to write into the T3a run's own directory) and prints lexical, semantic and RRF metrics overall and by category.
+
+**Fusion.** Standard equal-weight Reciprocal Rank Fusion with the conventional k = 60, fixed and not tuned: `rrf(d) = 1/(60 + lexical_rank) + 1/(60 + semantic_rank)`, where a document absent from one ranking gets nothing from that side. Only rank positions are used; BM25 relevance and cosine similarity are never combined. Scores are exact fractions, so rank pairs such as (1, 3) and (3, 1) tie exactly; ties go to path ascending, and every top-1 decided that way is reported. Labels and categories are used only to score the fused ranking, never to produce it.
+
+**Frozen input.** Before fusing, the T3a artifact must contain every case's full lexical and semantic rankings (the semantic one covering the whole corpus), and its stored ranks, metrics and agreement buckets must follow from those rankings. The cases must carry the manifest's labels unchanged, with any unscored manifest case listed as T3a drift. Missing or inconsistent data is reported and nothing is fused or regenerated.
+
+**Report.** Top-1 / top-3 / MRR for all three systems overall and per category; which T3a lexical-only, semantic-only and both-correct top-1 wins RRF keeps; which both-wrong cases it recovers; where the expected document's fused rank is better or worse than both inputs; top-3 losses against each input; ties decided by path; the RRF top-3 for every RRF miss; and every query's three ranks. The top-1 union of the two inputs is shown as an oracle reference, not a system result.
+

@@ -18,6 +18,7 @@ run_jev_judge.py          T3d step 2a: Jev on the frozen cases (typesafe-sdk env
 run_laya_judge.py         T3d step 2b: Laya on the frozen cases (laya environment)
 compare_judges.py         T3d step 3: score and compare the judges (standard library only)
 run_localization.py       T3e: lexical vs semantic within-document localization (embedding environment)
+run_localization_fusion.py T3f: projection + packet fusion over a T3e results.json (no model)
 requirements-jev.txt      T3d Jev judge dependency (verified version)
 requirements-laya.txt     T3d Laya judge dependency (verified version)
 T3A-LIVE-RESULTS.md       summary of the first real-machine T3a run
@@ -47,6 +48,9 @@ embedding_bench/
   evidence.py             T3e: anchor spans and post-localization coverage scoring
   localization_runner.py  T3e: label-free localization, then evaluation, timings, candidate packs
   localization_report.py  T3e Markdown report + terminal summary
+  projection.py           T3f: query-aware projection of a selected passage (ZOMAH's lexical matcher)
+  localization_fusion.py  T3f: T3e input validation, label-free decisions, packets, evaluation
+  localization_fusion_report.py  T3f Markdown report + terminal summary
 tests/                    pure-logic tests (no torch, no model download)
 ```
 
@@ -211,3 +215,27 @@ It writes `results.json`, `report.md` and, with `--t3a-results`, `candidate_pack
 **Drift guards.** Cases whose anchor is gone are reported and not scored. With `--t3a-results` the corpus must still match T3a. The recomputed lexical coverage must match the recorded baseline (line overlap: exact 7/7, paraphrase 0/10, conceptual 0/5, distractor 3/8); otherwise the run stops before loading the model.
 
 **Candidate-pack simulation.** With `--t3a-results`, the semantic localizer is also applied to every document in each case's T3c candidate union, producing one passage per candidate in `candidate_packs.json`. It is not scored and is sent to no judge.
+
+## T3f: deterministic evidence projection + bounded localization fusion
+
+T3e showed that selection has little headroom (lexical-or-semantic top-1 reaches 21/30 against 20/30 for semantic alone) while projection loses evidence (the semantic passage holds it in 20/30 cases, its 160-character leading excerpt in 12/30). T3f works on projection first. It reads a T3e `results.json` and nothing else: no model, no corpus, no re-embedding, and T3e's window size is unchanged. Run it in the ZOMAH environment:
+
+```bash
+.venv/bin/python experiments/qwen3_embedding/run_localization_fusion.py \
+  --t3e-results ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3e/results.json \
+  --output-dir ~/.local/share/zomah/experiments/qwen3-embedding/run-1-t3f
+```
+
+It writes `results.json` and `report.md` and prints a summary.
+
+**Order of work.** The artifact's structure is checked and its recorded leading excerpts must reproduce from its passages. Label-free cases (id, query, path, both passages, lexical native excerpt, semantic similarity and top windows) are built, and every projection and packet is decided and frozen (`decisions_sha256`). Only then are categories and anchors read: the recorded T3e evaluation, metrics, pairwise buckets and top-3 diagnostics must reproduce, the recomputed baselines must equal the accepted live run in `T3E-LIVE-RESULTS.md`, and the frozen decisions are scored.
+
+**Query-aware projection.** Deterministic, from the selected passage and the query alone. If the trimmed passage fits the budget it is returned whole. Otherwise query phrases are matched with ZOMAH's own lexical matcher (`zomah.knowledge._query_phrases` and `_line_matches`, unchanged: case- and diacritic-insensitive, whole words, `tool-result` as the words tool, result). The strongest line has the most distinct phrases, then the most occurrences, then comes first. The window starts a quarter of the budget before the earliest match on that line (localize() keeps 40 of 160). With no match it is centred on the passage, never on the leading characters. A window that reaches a passage edge is shifted back inside it. A cut that would split a word (a run of letters or digits) moves to the word boundary when that keeps at least half the budget. Spans are exact source positions; "…" marks omitted passage text and does not count against the budget.
+
+**Projection evaluation.** Both frozen T3e passages (lexical and semantic) are projected by the T3e leading rule and by the query-aware rule at 80, 120 and 160 characters. The report gives, per method and budget, evidence survival, whole-anchor containment and mean anchor coverage, overall and by category, plus leading-vs-query-aware case buckets, and how many of the semantic passage's line hits keep their evidence after compression.
+
+**Packet fusion.** `semantic_primary_dual_on_disagreement`: the semantic passage comes first. When the lexical and semantic line ranges overlap, only the semantic projection is emitted, with the whole total budget. When they are disjoint, the semantic projection is followed by the lexical projection, each with half the total. Totals are 160, 240 and 320 characters, and the split never depends on correctness. A control spends the same total on the semantic passage alone, so gains from dual evidence are separated from gains from a larger budget. Packets are scored on the union of their emitted source spans, with emitted source characters (mean, median, max) and the share of cases that needed dual evidence reported alongside.
+
+**Headroom diagnostics.** After scoring: the top-1 passage oracle (lexical or semantic lines overlap the evidence), semantic top-1 and semantic top-3.
+
+**Drift guards.** A malformed, incompatible or internally inconsistent artifact stops the run (exit 2). Recomputed baselines that differ from the accepted live run stop it too (exit 3), naming every differing value. `--skip-t3e-reference` is for fixture runs only and is flagged in every output.

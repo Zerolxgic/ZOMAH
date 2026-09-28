@@ -22,6 +22,8 @@ requirements-jev.txt      T3d Jev judge dependency (verified version)
 requirements-laya.txt     T3d Laya judge dependency (verified version)
 T3A-LIVE-RESULTS.md       summary of the first real-machine T3a run
 T3B-LIVE-RESULTS.md       summary of the real-machine T3b fusion run
+T3C-LIVE-RESULTS.md       summary of the real-machine T3c candidate audit
+T3E-LIVE-RESULTS.md       summary of the real-machine T3e localization run
 requirements.txt          experiment-only dependencies (verified versions)
 embedding_bench/
   manifest.py             manifest validation + evidence-anchor drift checks

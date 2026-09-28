@@ -10,6 +10,7 @@ import json
 import random
 import subprocess
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -401,6 +402,75 @@ def test_mutation_a_label_leak_would_be_caught(t3e_data, monkeypatch) -> None:
     assert decisions_sha(relabelled(t3e_data)) != decisions_sha(copy.deepcopy(t3e_data))
 
 
+class LabelReadBeforeFreeze(AssertionError):
+    pass
+
+
+class Tripwire:
+    def __init__(self) -> None:
+        self.armed = True
+        self.read_after_freeze: set[str] = set()
+
+
+class Guarded(Mapping):
+    """Read-only view of artifact JSON: any label-bearing key raises while the tripwire is armed."""
+
+    def __init__(self, data: dict, trip: Tripwire) -> None:
+        self._data, self._trip = data, trip
+
+    def _touch(self, key: str) -> None:
+        if key in t3f.LABEL_KEYS:
+            if self._trip.armed:
+                raise LabelReadBeforeFreeze(key)
+            self._trip.read_after_freeze.add(key)
+
+    def __getitem__(self, key):
+        self._touch(key)
+        return guard(self._data[key], self._trip)
+
+    def __contains__(self, key) -> bool:
+        self._touch(key)
+        return key in self._data
+
+    def __iter__(self):
+        return iter(self._data)
+
+    def __len__(self) -> int:
+        return len(self._data)
+
+
+def guard(value, trip: Tripwire):
+    if isinstance(value, dict):
+        return Guarded(value, trip)
+    if isinstance(value, list):
+        return [guard(item, trip) for item in value]
+    return value
+
+
+def test_no_label_bearing_key_is_read_before_decisions_are_frozen(t3e_data, result, monkeypatch) -> None:
+    trip = Tripwire()
+    real_freeze = t3f.freeze
+    frozen: list[str] = []
+
+    def freeze_then_disarm(decisions):
+        out = real_freeze(decisions)
+        frozen.append(out[1])
+        trip.armed = False  # labels become readable only once freeze has returned
+        return out
+
+    monkeypatch.setattr(t3f, "freeze", freeze_then_disarm)
+    artifact = parse_t3e(guard(copy.deepcopy(t3e_data), trip))  # phase 1, armed
+    guarded = run_t3f_artifact(artifact, reference=None)  # phase 2 armed until freeze returns, then phase 3
+
+    assert frozen == [guarded["decisions_sha256"]] == [result["decisions_sha256"]]
+    # Phase 3 reads labels through the same view, so the tripwire does see these access paths.
+    assert {"category", "anchor_lines", "anchor_chars", "anchor_length", "evaluation", "first_hit_rank",
+            "overlaps_anchor", "metrics", "pairwise", "top3"} <= trip.read_after_freeze
+    # And label validation run early would have tripped it.
+    with pytest.raises(LabelReadBeforeFreeze):
+        t3f.validate_t3e_labels(parse_t3e(guard(copy.deepcopy(t3e_data), Tripwire())))
+
+
 def test_decisions_are_frozen_before_evaluation_and_recorded_verbatim(t3e_data, result) -> None:
     cases = label_free_cases(parse_t3e(copy.deepcopy(t3e_data)))
     frozen, sha = freeze([decide(c) for c in cases])
@@ -487,9 +557,6 @@ MALFORMED = [
     (_set("cases", []), "no scored cases"),
     (_delete("cases.0.query"), "missing 'query'"),
     (_duplicate_id, "duplicate case id"),
-    (_set("cases.0.category", "unknown"), "category is not in the recorded metrics"),
-    (_set("cases.0.anchor_length", 0), "anchor_length"),
-    (_set("cases.0.anchor_chars", [5, 5]), "anchor span is empty"),
     (_edit_text("semantic"), "leading excerpt does not reproduce"),
     (_edit_text("lexical"), "leading excerpt does not reproduce"),
     (_set("cases.0.semantic.passage.char_end", -1), "char span does not match"),
@@ -522,7 +589,13 @@ def _bump_top3(data: dict) -> None:
     data["top3"]["hit_in_top3"] += 1
 
 
-INCONSISTENT = [
+LABEL_PROBLEMS = [
+    (_set("cases.0.category", "unknown"), "category is not in the recorded metrics"),
+    (_set("cases.0.anchor_length", 0), "anchor_length"),
+    (_set("cases.0.anchor_chars", [5, 5]), "anchor span is empty"),
+    (_delete("cases.0.anchor_lines"), "missing 'anchor_lines'"),
+    (_delete("cases.0.semantic.evaluation"), "missing 'evaluation'"),
+    (_delete("metrics"), "missing 'metrics'"),
     (_flip_first_evaluation, "recorded lexical evaluation does not reproduce"),
     (_set("cases.0.semantic.first_hit_rank", 999), "first-hit rank does not reproduce"),
     (_bump_metric, "recorded T3e metrics do not reproduce"),
@@ -530,11 +603,11 @@ INCONSISTENT = [
 ]
 
 
-@pytest.mark.parametrize("mutate, message", INCONSISTENT)
-def test_internally_inconsistent_artifacts_fail_before_scoring(t3e_data, mutate, message) -> None:
+@pytest.mark.parametrize("mutate, message", LABEL_PROBLEMS)
+def test_label_problems_fail_in_phase_3_before_scoring(t3e_data, mutate, message) -> None:
     data = copy.deepcopy(t3e_data)
     mutate(data)
-    artifact = parse_t3e(data)  # structurally fine
+    artifact = parse_t3e(data)  # phase 1 never looks at labels, so it accepts this
     with pytest.raises(T3eInputError, match=message):
         run_t3f_artifact(artifact, reference=None)
 

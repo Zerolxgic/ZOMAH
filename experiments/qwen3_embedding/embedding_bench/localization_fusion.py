@@ -3,12 +3,13 @@
 Reads one T3e ``results.json`` and nothing else: no model, no corpus, no
 re-embedding. Three strictly ordered phases:
 
-1. check the artifact's structure and that its recorded leading excerpts
-   reproduce (label-free);
+1. check only the label-free fields (identity, config, ids, queries, paths,
+   passages, native excerpt, semantic similarity and windows) and that the
+   recorded leading excerpts reproduce;
 2. build label-free cases and freeze every projection and packet;
-3. only then read categories and anchors: reproduce the recorded T3e
-   evaluation, check it against the accepted live run, and score the frozen
-   decisions.
+3. only then read categories, anchors and recorded evaluation: validate
+   them, reproduce the recorded T3e evaluation, check it against the
+   accepted live run, and score the frozen decisions.
 """
 
 from __future__ import annotations
@@ -37,6 +38,12 @@ PACKET_TOTALS = (160, 240, 320)
 FUSION = "semantic_primary_dual_on_disagreement"
 CONTROL = "semantic_only"  # the same total budget spent on the semantic passage alone
 STRATEGIES = (FUSION, CONTROL)
+# Label-bearing keys of a T3e artifact. Phases 1 and 2 never read them (a test enforces this).
+LABEL_KEYS = frozenset({
+    "category", "anchor_lines", "anchor_chars", "anchor_length",  # per case
+    "evaluation", "first_hit_rank", "overlaps_anchor",  # per localizer / top window
+    "metrics", "pairwise", "top3", "lexical_reference", "drift",  # artifact level
+})
 REFERENCE_MEASURES = (
     "line_overlap",
     "passage_contains_anchor",
@@ -76,7 +83,7 @@ class T3eReferenceDrift(RuntimeError):
     """The baselines recomputed from the artifact differ from the accepted T3e run."""
 
 
-# --- phase 1: the artifact -------------------------------------------------------------------------
+# --- phase 1: the artifact, label-free fields only ---------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,7 +91,6 @@ class T3eArtifact:
     source: str
     sha256: str | None
     data: Mapping[str, Any]
-    categories: tuple[str, ...]
 
 
 def load_t3e(path: str | Path) -> T3eArtifact:
@@ -101,7 +107,10 @@ def load_t3e(path: str | Path) -> T3eArtifact:
 
 
 def parse_t3e(data: Any, *, source: str = "<memory>", sha256: str | None = None) -> T3eArtifact:
-    """Check structure and that the recorded leading excerpts reproduce. Reads no label values."""
+    """Phase 1: check the label-free fields and that the recorded leading excerpts reproduce.
+
+    Never reads a key in ``LABEL_KEYS``; those are validated by ``validate_t3e_labels`` in phase 3.
+    """
 
     if not isinstance(data, Mapping):
         raise T3eInputError("a T3e results.json is a JSON object")
@@ -113,14 +122,6 @@ def parse_t3e(data: Any, *, source: str = "<memory>", sha256: str | None = None)
     for key, value in expected_config.items():
         if config.get(key) != value:
             raise T3eInputError(f"config.{key} is {config.get(key)!r}, T3f expects {value!r}")
-    metrics = _get(data, "metrics", Mapping, "artifact")
-    for localizer in SOURCES:
-        _get(_get(_get(metrics, localizer, Mapping, "metrics"), "overall", Mapping, f"metrics.{localizer}"),
-             "hits", Mapping, f"metrics.{localizer}.overall")
-    categories = tuple(_get(_get(metrics, "lexical", Mapping, "metrics"), "by_category", Mapping, "metrics.lexical"))
-    _get(data, "pairwise", Mapping, "artifact")
-    _get(data, "top3", Mapping, "artifact")
-
     cases = _get(data, "cases", list, "artifact")
     if not cases:
         raise T3eInputError("the artifact has no scored cases")
@@ -135,26 +136,16 @@ def parse_t3e(data: Any, *, source: str = "<memory>", sha256: str | None = None)
         if not _get(row, "query", str, where).strip():
             raise T3eInputError(f"{where}: empty query")
         _get(row, "expected_path", str, where)
-        if _get(row, "category", str, where) not in categories:
-            raise T3eInputError(f"{where}: category is not in the recorded metrics")
-        anchor_lines = _pair(row, "anchor_lines", where)
-        anchor_chars = _pair(row, "anchor_chars", where)
-        if anchor_lines[0] < 1 or anchor_chars[0] < 0 or anchor_chars[1] <= anchor_chars[0]:
-            raise T3eInputError(f"{where}: anchor span is empty or out of range")
-        if _get(row, "anchor_length", int, where) != anchor_chars[1] - anchor_chars[0]:
-            raise T3eInputError(f"{where}: anchor_length disagrees with anchor_chars")
 
         lexical = _get(row, "lexical", Mapping, where)
         lexical_passage = _passage(_get(lexical, "passage", Mapping, f"{where}.lexical"), f"{where}.lexical.passage")
         _check_leading(lexical, lexical_passage, f"{where}.lexical")
         _native_excerpt(lexical, lexical_passage, f"{where}.lexical")
-        _get(lexical, "evaluation", Mapping, f"{where}.lexical")
 
         semantic = _get(row, "semantic", Mapping, where)
         semantic_passage = _passage(_get(semantic, "passage", Mapping, f"{where}.semantic"), f"{where}.semantic.passage")
         _check_leading(semantic, semantic_passage, f"{where}.semantic")
         _get(semantic, "similarity", (int, float), f"{where}.semantic")
-        _get(semantic, "evaluation", Mapping, f"{where}.semantic")
         top = _get(semantic, "top", list, f"{where}.semantic")
         ranking = _get(semantic, "ranking", list, f"{where}.semantic")
         if not top or not ranking:
@@ -169,7 +160,7 @@ def parse_t3e(data: Any, *, source: str = "<memory>", sha256: str | None = None)
         selected = (semantic_passage.start_line, semantic_passage.end_line)
         if _line_range(top[0], f"{where}.semantic.top[0]") != selected or tuple(ranking[0][:2]) != selected:
             raise T3eInputError(f"{where}.semantic: the selected passage is not the top-ranked window")
-    return T3eArtifact(source, sha256, data, categories)
+    return T3eArtifact(source, sha256, data)
 
 
 def _check_leading(localized: Mapping[str, Any], passage: Passage, where: str) -> None:
@@ -362,9 +353,37 @@ def score_spans(spans: Sequence[tuple[int, int]], anchor: tuple[int, int]) -> di
     return {"contains_anchor": whole, "survives": whole or inside, "coverage": covered / (anchor[1] - anchor[0])}
 
 
-def reproduce_t3e(artifact: T3eArtifact) -> dict[str, Any]:
+def validate_t3e_labels(artifact: T3eArtifact) -> tuple[str, ...]:
+    """Phase 3: check the label-bearing fields and return the benchmark categories."""
+
+    data = artifact.data
+    metrics = _get(data, "metrics", Mapping, "artifact")
+    for localizer in SOURCES:
+        _get(_get(_get(metrics, localizer, Mapping, "metrics"), "overall", Mapping, f"metrics.{localizer}"),
+             "hits", Mapping, f"metrics.{localizer}.overall")
+    categories = tuple(_get(_get(metrics, "lexical", Mapping, "metrics"), "by_category", Mapping, "metrics.lexical"))
+    _get(data, "pairwise", Mapping, "artifact")
+    _get(data, "top3", Mapping, "artifact")
+    for row in data["cases"]:
+        where = f"case {row['id']}"
+        if _get(row, "category", str, where) not in categories:
+            raise T3eInputError(f"{where}: category is not in the recorded metrics")
+        anchor_lines = _pair(row, "anchor_lines", where)
+        anchor_chars = _pair(row, "anchor_chars", where)
+        if anchor_lines[0] < 1 or anchor_chars[0] < 0 or anchor_chars[1] <= anchor_chars[0]:
+            raise T3eInputError(f"{where}: anchor span is empty or out of range")
+        if _get(row, "anchor_length", int, where) != anchor_chars[1] - anchor_chars[0]:
+            raise T3eInputError(f"{where}: anchor_length disagrees with anchor_chars")
+        for localizer in SOURCES:
+            _get(row[localizer], "evaluation", Mapping, f"{where}.{localizer}")
+    return categories
+
+
+def reproduce_t3e(artifact: T3eArtifact, categories: Sequence[str] | None = None) -> dict[str, Any]:
     """Re-score the recorded T3e selections, require the recorded evaluation, return the baseline."""
 
+    if categories is None:
+        categories = validate_t3e_labels(artifact)
     data = artifact.data
     rows = data["cases"]
     for row in rows:
@@ -381,7 +400,7 @@ def reproduce_t3e(artifact: T3eArtifact) -> dict[str, Any]:
         if first != semantic.get("first_hit_rank"):
             raise T3eInputError(f"case {row['id']}: the recorded first-hit rank does not reproduce")
 
-    categories = list(artifact.categories)
+    categories = list(categories)
     metrics = {localizer: summarize(rows, localizer, categories) for localizer in SOURCES}
     pairs = {measure: pairwise(rows, measure) for measure in ("line_overlap", "excerpt_160_survives")}
     top3 = {
@@ -628,7 +647,8 @@ def run_t3f_artifact(
     decisions, decisions_sha256 = freeze([decide(case) for case in cases])
 
     # Phase 3: labels from here on.
-    baseline = reproduce_t3e(artifact)
+    categories = list(validate_t3e_labels(artifact))
+    baseline = reproduce_t3e(artifact, categories)
     reference_check = check_reference(baseline, reference)
     rows = []
     for row, decision in zip(artifact.data["cases"], decisions, strict=True):
@@ -647,7 +667,6 @@ def run_t3f_artifact(
                 "evaluation": evaluate_decision(decision, anchor, anchor_lines),
             }
         )
-    categories = list(artifact.categories)
     metrics = aggregate(rows, categories)
     _check_consistency(metrics, baseline)
     source_config = artifact.data["config"]

@@ -315,7 +315,9 @@ class WorkerSession:
                 worker=self._worker,
                 model=self._model,
                 goal=goal,
-                call=call,
+                # A private copy (ToolCall deep-copies its arguments): an observer
+                # can never change the call that _run_tool executes next.
+                call=ToolCall(id=call.id, name=call.name, arguments=call.arguments),
             )
         except Exception:
             # Shadow observation must never alter normal tool execution.

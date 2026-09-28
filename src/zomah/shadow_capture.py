@@ -7,6 +7,7 @@ route, or otherwise influence tool execution.
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
 from collections.abc import Mapping
@@ -19,6 +20,7 @@ from zomah.model_runtime import ToolCall
 
 _REDACTED = "[REDACTED]"
 _OMITTED_PAYLOAD = "[OMITTED_PAYLOAD]"
+_NEW_FILE_MODE = 0o600  # owner-only; applied only when the log file is created
 
 _SECRET_KEY_FRAGMENTS = (
     "authorization",
@@ -31,7 +33,9 @@ _SECRET_KEY_FRAGMENTS = (
     "api_key",
     "apikey",
     "private_key",
+    "privatekey",
     "access_key",
+    "accesskey",
 )
 
 _PAYLOAD_KEYS = frozenset(
@@ -110,16 +114,20 @@ class JsonlToolCallObserver:
                 timespec="milliseconds"
             ),
             "source": "zomah",
+            # Written before execution, and also for calls ZOMAH then refuses
+            # (tool_not_available): a model request, not an executed action.
+            "stage": "model_requested",
             "worker": worker,
             "model": model,
             "goal": _sanitize_text(goal, limit=1024),
             "tool_call_id": call.id,
-            "executor": call.name,
             "planned_action": call.name,
             "arguments": _sanitize_value(dict(call.arguments)),
         }
 
         self._path.parent.mkdir(parents=True, exist_ok=True)
         line = json.dumps(record, separators=(",", ":"), ensure_ascii=False)
-        with self._path.open("a", encoding="utf-8") as handle:
+        # Create owner-only; an existing file keeps whatever mode it already has.
+        fd = os.open(self._path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, _NEW_FILE_MODE)
+        with os.fdopen(fd, "a", encoding="utf-8") as handle:
             handle.write(line + "\n")

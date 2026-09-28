@@ -77,6 +77,21 @@ class ToolExecutor(Protocol):
         ...
 
 
+class ToolCallObserver(Protocol):
+    """Best-effort observer for model-requested tool calls."""
+
+    def observe(
+        self,
+        *,
+        worker: str,
+        model: str,
+        goal: str,
+        call: ToolCall,
+    ) -> None:
+        """Observe a tool call without controlling execution."""
+        ...
+
+
 class SessionBusyError(RuntimeError):
     """A turn was sent while another turn in the same session was in flight."""
 
@@ -120,6 +135,7 @@ class WorkerSession:
         context_limit: int | None = None,
         tools: Sequence[ToolDefinition] = (),
         tool_executor: ToolExecutor | None = None,
+        tool_call_observer: ToolCallObserver | None = None,
         tool_result_budget_chars: int = DEFAULT_TOOL_RESULT_BUDGET_CHARS,
     ) -> None:
         if not worker.strip():
@@ -148,6 +164,7 @@ class WorkerSession:
         self._tools = tools
         self._tool_names = frozenset(names)
         self._executor = tool_executor
+        self._tool_call_observer = tool_call_observer
         self._tool_result_budget_chars = tool_result_budget_chars
         self._history: list[SessionMessage] = []
         self._usage: TokenUsage | None = None
@@ -257,6 +274,7 @@ class WorkerSession:
 
                 candidate.append(message)
                 for call in message.tool_calls:
+                    self._observe_tool_call(user.text, call)
                     content = await self._run_tool(call)
                     # Accept a complete result or stop; never truncate here.
                     if result_chars + len(content) > self._tool_result_budget_chars:
@@ -287,6 +305,21 @@ class WorkerSession:
         ):
             raise ModelRuntimeError("The model runtime returned an invalid response.")
         return response
+
+    def _observe_tool_call(self, goal: str, call: ToolCall) -> None:
+        observer = self._tool_call_observer
+        if observer is None:
+            return
+        try:
+            observer.observe(
+                worker=self._worker,
+                model=self._model,
+                goal=goal,
+                call=call,
+            )
+        except Exception:
+            # Shadow observation must never alter normal tool execution.
+            return
 
     async def _run_tool(self, call: ToolCall) -> str:
         # Never trust the response: only advertised tools may execute.

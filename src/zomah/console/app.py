@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sqlite3
 from dataclasses import replace
 import getpass
@@ -62,6 +63,7 @@ from zomah.model_tools import (
     build_session_tools,
 )
 from zomah.model_runtime import ModelRuntimeError
+from zomah.shadow_capture import JsonlToolCallObserver
 from zomah.worker_session import (
     DEFAULT_TOOL_RESULT_BUDGET_CHARS,
     SessionBusyError,
@@ -784,6 +786,12 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
             dependencies=dependencies,
             allowed_ids=allowed_ids,
         )
+        shadow_log = os.environ.get("ZOMAH_SHADOW_TOOL_LOG")
+        tool_call_observer = (
+            JsonlToolCallObserver(shadow_log)
+            if shadow_log is not None and shadow_log.strip()
+            else None
+        )
         session = WorkerSession(
             LMStudioRuntime(base_url=args.lmstudio_base_url),
             worker=DEFAULT_WORKER,
@@ -791,6 +799,7 @@ def build_console(argv: Sequence[str] | None = None) -> OperatorConsole:
             context_limit=args.context_limit,
             tools=tools,
             tool_executor=executor,
+            tool_call_observer=tool_call_observer,
             tool_result_budget_chars=(
                 DEFAULT_TOOL_RESULT_BUDGET_CHARS if budget is None else budget
             ),
